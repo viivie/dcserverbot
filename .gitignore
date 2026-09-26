@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.py[cod]
+*.log
+
+# SQLite runtime sidecar files; the main database is kept as the initial data.
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+
+# Legacy JSON storage should not be used after the SQLite migration.
+worship.json
