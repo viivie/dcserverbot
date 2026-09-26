@@ -44,6 +44,7 @@ def register_worship_someone(
         embed.set_image(url=str(target.display_avatar.url))
 
         await interaction.response.send_message(
+            content=f"{target.mention}",
             embed=embed,
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
