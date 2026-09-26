@@ -3,9 +3,9 @@ __pycache__/
 *.py[cod]
 *.log
 
-# SQLite runtime sidecar files; the main database is kept as the initial data.
-data/*.sqlite3-shm
-data/*.sqlite3-wal
+# Runtime data must stay local and must not be committed.
+data/*
+!data/.gitkeep
 
 # Legacy JSON storage should not be used after the SQLite migration.
 worship.json
