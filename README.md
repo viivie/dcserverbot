@@ -25,12 +25,11 @@ main.py                 ACLClouds 預設入口
 bot.py                  Gateway 啟動入口
 config.py               環境變數與共用設定
 storage.py              SQLite 儲存
-worship.py              膜拜專用規則、文字與 Embed 設定
 discord_api.py          Discord REST 與頭像查詢
 gateway.py              Gateway 啟動與指令同步
 commands/__init__.py    指令註冊表
 commands/context.py     指令共用依賴
-commands/worship.py     /worship 指令
+commands/worship.py     膜拜規則、文字、Embed 設定與 /worship 指令
 ```
 
 新增指令時，在 `commands/` 新增模組，例如 `commands/ping.py`，再在 `commands/__init__.py` 的 `register_all()` 加上 `register_ping(...)`。ACLClouds 部署時必須連同整個 `commands/` 資料夾一起上傳。

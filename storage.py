@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from worship import next_streak, taipei_today
+from commands.worship import next_streak, taipei_today
 
 
 class WorshipStore:
