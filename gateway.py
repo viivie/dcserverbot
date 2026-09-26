@@ -26,6 +26,7 @@ def run_gateway(config: Config) -> None:
     store = WorshipStore(config.data_file)
     context = CommandContext(config, store, DiscordApi(config, store))
     intents = discord.Intents.default()
+    intents.message_content = True
 
     class GatewayClient(discord.Client):
         def __init__(self) -> None:
@@ -68,5 +69,11 @@ def run_gateway(config: Config) -> None:
             except discord.HTTPException as error:
                 LOGGER.warning("could not sync /worship to guild %s: %s", guild.id, error)
         client.commands_synced = True
+
+    @client.event
+    async def on_message(message) -> None:
+        from commands.admin import handle_admin_message
+
+        await handle_admin_message(message)
 
     client.run(config.bot_token)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,14 @@ class WorshipStore:
                     user_id TEXT NOT NULL,
                     avatar_url TEXT NOT NULL,
                     refreshed_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS master_relationships (
+                    guild_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    master_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, actor_id, master_id)
                 );
                 """
             )
@@ -185,3 +194,33 @@ class WorshipStore:
                 """,
                 (guild_id, user_id, avatar_url, refreshed_at),
             )
+
+    def add_master(self, guild_id: str, actor_id: str, master_id: str) -> bool:
+        """Record one accepted master relationship.
+
+        Returns False when the same relationship already exists.
+        """
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO master_relationships(
+                    guild_id, actor_id, master_id, created_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (guild_id, actor_id, master_id, int(time.time() * 1000)),
+            )
+            return cursor.rowcount > 0
+
+    def list_masters(self, guild_id: str, actor_id: str) -> list[str]:
+        with self.lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT master_id
+                FROM master_relationships
+                WHERE guild_id = ? AND actor_id = ?
+                ORDER BY created_at ASC, master_id ASC
+                """,
+                (guild_id, actor_id),
+            ).fetchall()
+            return [str(row[0]) for row in rows]
