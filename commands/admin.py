@@ -161,7 +161,9 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                     tz=timezone.utc,
                 ).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
                 attachment_mark = " [含附件]" if deleted["attachments"] else ""
-                output_parts.append(f"{index}. {sent_at}｜{content}{attachment_mark}")
+                output_parts.append(
+                    f"{index}. {sent_at}｜{deleted['author_name']}｜{content}{attachment_mark}"
+                )
             output = "最近被刪除的訊息（傳送時間）\n" + "\n".join(output_parts)
             await message.channel.send(
                 output[:1990],
