@@ -42,15 +42,10 @@ def register_worship_someone(
             ),
             color=EMBED_COLOR,
         )
-        embed.set_author(
-            name=target.display_name,
-            icon_url=str(target.display_avatar.url),
-        )
         embed.set_image(url=str(target.display_avatar.url))
         embed.set_footer(text=EMBED_FOOTER)
 
         await interaction.response.send_message(
-            content=f"{actor.mention} → {target.mention}",
             embed=embed,
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
