@@ -224,3 +224,16 @@ class WorshipStore:
                 (guild_id, actor_id),
             ).fetchall()
             return [str(row[0]) for row in rows]
+
+    def list_slaves(self, guild_id: str, master_id: str) -> list[str]:
+        with self.lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT actor_id
+                FROM master_relationships
+                WHERE guild_id = ? AND master_id = ?
+                ORDER BY created_at ASC, actor_id ASC
+                """,
+                (guild_id, master_id),
+            ).fetchall()
+            return [str(row[0]) for row in rows]

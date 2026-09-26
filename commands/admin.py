@@ -11,6 +11,19 @@ from commands.master import get_active_view
 
 ADMIN_USER_ID = "1246096914634510417"
 BUTTON_PATTERN = re.compile(r"^&button\s+(\d+)\s+(\d+)\s*$", re.IGNORECASE)
+ADMIN_HELP = (
+    "\u7ba1\u7406\u54e1\u6307\u4ee4\u5217\u8868\n\n"
+    "&help\n"
+    "\u986f\u793a\u9019\u4efd\u7ba1\u7406\u54e1\u6307\u4ee4\u8aaa\u660e\uff08\u672c\u8a0a\u606f\u4ee5\u79c1\u4eba\u8a0a\u606f\u50b3\u9001\uff09\u3002\n"
+    "\u8a9e\u6cd5\uff1a&help\n\n"
+    "&say\n"
+    "\u8b93\u6a5f\u5668\u4eba\u5728\u76ee\u524d\u983b\u9053\u767c\u9001\u6307\u5b9a\u5167\u5bb9\u3002\n"
+    "\u8a9e\u6cd5\uff1a&say \u5167\u5bb9\n\n"
+    "&button\n"
+    "\u66ff\u6307\u5b9a\u8a8d\u4e3b\u8a0a\u606f\u57f7\u884c\u6309\u9215\u64cd\u4f5c\u3002\n"
+    "\u8a9e\u6cd5\uff1a&button \u8a0a\u606fID \u6309\u9215\u7de8\u865f\n"
+    "\u6309\u9215\u7de8\u865f\uff1a1 = \u63a5\u53d7\uff0c2 = \u62d2\u7d55\n"
+)
 
 
 async def handle_admin_message(message: discord.Message) -> bool:
@@ -19,6 +32,10 @@ async def handle_admin_message(message: discord.Message) -> bool:
         return False
 
     content = message.content.strip()
+
+    if content.lower() == "&help":
+        await message.author.send(ADMIN_HELP)
+        return True
 
     if content.lower() == "&say" or content.lower().startswith("&say "):
         text = content[4:].lstrip()
@@ -39,7 +56,7 @@ async def handle_admin_message(message: discord.Message) -> bool:
         view = get_active_view(message_id)
 
         if view is None:
-            await message.channel.send("找不到這個訊息的有效按鈕。")
+            await message.author.send("找不到這個訊息的有效按鈕。")
             return True
 
         try:

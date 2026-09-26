@@ -75,21 +75,21 @@ class WorshipView(discord.ui.View):
 
         self.resolved = True
         await self._reply_to_request(
-            f"錯過了 {self.actor.mention} 的認主請求。"
+            f"{self.target.mention}錯過了一個認主請求QwQ"
         )
 
     async def _resolve(self, button_number: int) -> str:
         if self.expired:
             self.resolved = True
             self.stop()
-            return f"錯過了 {self.actor.mention} 的認主請求。"
+            return f"{self.target.mention}錯過了一個認主請求QwQ"
 
         if button_number == 1:
             content = await self._accept()
         elif button_number == 2:
-            content = f"噢不，{self.target.mention} 拒絕了 {self.actor.mention} 的認主請求！"
+            content = f"噢不，{self.target.mention} 拒絕了 {self.actor.mention} 的認主請求！😭😭😭"
         else:
-            raise ValueError("目前認主卡片只有第 1、2 顆按鈕。")
+            raise ValueError("目前認主卡片只有第 1、2 顆按鈕")
 
         self.resolved = True
         self.stop()
@@ -118,7 +118,7 @@ class WorshipView(discord.ui.View):
     ) -> None:
         if interaction.user.id != self.target.id:
             await interaction.response.send_message(
-                content="這不是你的認主請求喔。",
+                content="這不是你的認主請求喔😡",
                 ephemeral=True,
             )
             return
@@ -138,7 +138,7 @@ class WorshipView(discord.ui.View):
     ) -> None:
         if interaction.user.id != self.target.id:
             await interaction.response.send_message(
-                content="這不是你的認主請求喔。",
+                content="這不是你的認主請求喔😡",
                 ephemeral=True,
             )
             return
@@ -181,7 +181,7 @@ def register_master(
 
         if actor.id == target.id:
             await interaction.response.send_message(
-                "不能認自己當主人喔。",
+                "不能認自己當主人😡",
                 ephemeral=True,
             )
             return
@@ -196,7 +196,7 @@ def register_master(
         embed = discord_module.Embed(
             title=EMBED_TITLE,
             description=(
-                f"{actor.mention} 想認 {target.mention} 為主人\n"
+                f"{actor.mention} 想認 {target.mention} 為主人!❤️\n"
                 f"你願意接受 {actor.mention} 的認主請求嗎？"
             ),
             color=EMBED_COLOR,
@@ -224,26 +224,39 @@ def register_master(
         view.message = message
         register_active_view(message.id, view)
 
-    @tree.command(name="masters", description="查看自己目前的所有主人")
+
+
+# check_master command
+
+    @tree.command(name="check_master", description="查看自己目前的奴隸與主人")
     @app_commands.guild_only()
-    async def masters(interaction: Any) -> None:
+    async def check_master(interaction: Any) -> None:
+        guild_id = str(interaction.guild_id)
         actor_id = str(interaction.user.id)
         master_ids = await asyncio.to_thread(
             context.store.list_masters,
-            str(interaction.guild_id),
+            guild_id,
+            actor_id,
+        )
+        slave_ids = await asyncio.to_thread(
+            context.store.list_slaves,
+            guild_id,
             actor_id,
         )
 
-        if not master_ids:
-            await interaction.response.send_message(
-                "你目前還沒有主人。",
-                ephemeral=True,
-            )
-            return
+        slave_text = (
+            "、".join(f"<@{slave_id}>" for slave_id in slave_ids)
+            if slave_ids
+            else "你還沒有奴隸喔"
+        )
+        master_text = (
+            "、".join(f"<@{master_id}>" for master_id in master_ids)
+            if master_ids
+            else "你還沒有主人喔"
+        )
 
-        mentions = "、".join(f"<@{master_id}>" for master_id in master_ids)
         await interaction.response.send_message(
-            f"你目前的主人有：{mentions}",
+            f"你的奴隸有\n{slave_text}\n-------------\n你的主人有\n{master_text}",
             ephemeral=True,
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
