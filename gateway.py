@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from commands import register_all
@@ -71,9 +72,30 @@ def run_gateway(config: Config) -> None:
         client.commands_synced = True
 
     @client.event
+    async def on_message_delete(message) -> None:
+        if (
+            message.guild is None
+            or message.author.bot
+            or message.content.strip().startswith("&!")
+        ):
+            return
+
+        await asyncio.to_thread(
+            store.record_deleted_message,
+            str(message.id),
+            str(message.guild.id),
+            str(message.channel.id),
+            str(message.author.id),
+            message.author.display_name,
+            message.content,
+            [attachment.url for attachment in message.attachments],
+            int(message.created_at.timestamp() * 1000),
+        )
+
+    @client.event
     async def on_message(message) -> None:
         from commands.admin import handle_admin_message
 
-        await handle_admin_message(message)
+        await handle_admin_message(message, store)
 
     client.run(config.bot_token)

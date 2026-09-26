@@ -66,6 +66,27 @@ class WorshipStore:
                     refreshed_at INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS prefix_command_permissions (
+                    user_id TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    granted_at INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, command)
+                );
+
+                CREATE TABLE IF NOT EXISTS deleted_messages (
+                    message_id TEXT PRIMARY KEY,
+                    guild_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    author_id TEXT NOT NULL,
+                    author_name TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    attachments TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT 0,
+                    deleted_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_deleted_messages_channel_time
+                    ON deleted_messages(channel_id, deleted_at DESC);
+
                 CREATE TABLE IF NOT EXISTS master_relationships (
                     guild_id TEXT NOT NULL,
                     actor_id TEXT NOT NULL,
@@ -75,6 +96,14 @@ class WorshipStore:
                 );
                 """
             )
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(deleted_messages)")
+            }
+            if "created_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE deleted_messages ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _migrate_json(self, legacy_path: Path) -> None:
         try:
@@ -237,3 +266,133 @@ class WorshipStore:
                 (guild_id, master_id),
             ).fetchall()
             return [str(row[0]) for row in rows]
+
+
+    def grant_prefix_command(self, user_id: str, command: str) -> bool:
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO prefix_command_permissions(user_id, command, granted_at)
+                VALUES (?, ?, ?)
+                """,
+                (str(user_id), command.lower(), int(time.time() * 1000)),
+            )
+            return cursor.rowcount > 0
+
+    def revoke_prefix_command(self, user_id: str, command: str) -> bool:
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM prefix_command_permissions WHERE user_id = ? AND command = ?",
+                (str(user_id), command.lower()),
+            )
+            return cursor.rowcount > 0
+
+    def clear_prefix_commands(self, user_id: str) -> None:
+        with self.lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM prefix_command_permissions WHERE user_id = ?",
+                (str(user_id),),
+            )
+
+    def has_prefix_command(self, user_id: str, command: str) -> bool:
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM prefix_command_permissions
+                WHERE user_id = ? AND command = ?
+                """,
+                (str(user_id), command.lower()),
+            ).fetchone()
+            return row is not None
+
+    def list_prefix_commands(self, user_id: str) -> list[str]:
+        with self.lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT command
+                FROM prefix_command_permissions
+                WHERE user_id = ?
+                ORDER BY command ASC
+                """,
+                (str(user_id),),
+            ).fetchall()
+            return [str(row[0]) for row in rows]
+
+    def record_deleted_message(
+        self,
+        message_id: str,
+        guild_id: str,
+        channel_id: str,
+        author_id: str,
+        author_name: str,
+        content: str,
+        attachments: list[str],
+        created_at: int,
+    ) -> None:
+        with self.lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO deleted_messages(
+                    message_id, guild_id, channel_id, author_id, author_name,
+                    content, attachments, created_at, deleted_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(message_id),
+                    str(guild_id),
+                    str(channel_id),
+                    str(author_id),
+                    str(author_name),
+                    content,
+                    json.dumps(attachments, ensure_ascii=False),
+                    int(created_at),
+                    int(time.time() * 1000),
+                ),
+            )
+            connection.execute(
+                """
+                DELETE FROM deleted_messages
+                WHERE message_id NOT IN (
+                    SELECT message_id
+                    FROM deleted_messages
+                    ORDER BY deleted_at DESC, rowid DESC
+                    LIMIT 500
+                )
+                """
+            )
+
+    def latest_deleted_messages(self, channel_id: str, limit: int = 1) -> list[dict[str, Any]]:
+        with self.lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT author_id, author_name, content, attachments, created_at, deleted_at
+                FROM deleted_messages
+                WHERE channel_id = ?
+                ORDER BY deleted_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (str(channel_id), max(1, min(int(limit), 10))),
+            ).fetchall()
+
+            result = []
+            for row in rows:
+                try:
+                    attachments = json.loads(row[3])
+                except (TypeError, json.JSONDecodeError):
+                    attachments = []
+                if not isinstance(attachments, list):
+                    attachments = []
+
+                result.append(
+                    {
+                        "author_id": str(row[0]),
+                        "author_name": str(row[1]),
+                        "content": str(row[2]),
+                        "attachments": [str(item) for item in attachments],
+                        "created_at": int(row[4]),
+                        "deleted_at": int(row[5]),
+                    }
+                )
+            return result

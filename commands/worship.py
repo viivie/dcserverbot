@@ -99,7 +99,7 @@ def register_worship(tree: Any, discord: Any, app_commands: Any, context: Comman
 
         mentions = [target_id, user_id] if target_id else [user_id]
         embed = discord.Embed(title=EMBED_TITLE, description=worship_line(display_name), color=EMBED_COLOR)
-        embed.add_field(name="累計膜拜次數", value=count_label(receipt["total"]), inline=True)
+        embed.add_field(name="全世界累計膜拜次數", value=count_label(receipt["total"]), inline=True)
         embed.add_field(name="當前連續天數", value=day_label(receipt["streak"]), inline=True)
         embed.set_footer(text=EMBED_FOOTER)
         if avatar_url:

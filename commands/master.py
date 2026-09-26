@@ -196,7 +196,7 @@ def register_master(
         embed = discord_module.Embed(
             title=EMBED_TITLE,
             description=(
-                f"{actor.mention} 想認 {target.mention} 為主人!❤️\n"
+                f"{actor.mention} 想認 {target.mention} 為主人! ❤️\n"
                 f"你願意接受 {actor.mention} 的認主請求嗎？"
             ),
             color=EMBED_COLOR,
