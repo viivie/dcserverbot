@@ -60,7 +60,7 @@ def worship_line(display_name: str) -> str:
 def register_worship(tree: Any, discord: Any, app_commands: Any, context: CommandContext) -> None:
     """Register the /worship command using the worship rules in this module."""
 
-    @tree.command(name="worship", description="向最偉大最可愛的芙帽姐姐大人獻上誠摯的敬意")
+    @tree.command(name="worship", description="向芙帽姐姐大人獻上誠摯的敬意")
     @app_commands.guild_only()
     async def worship(interaction: Any) -> None:
         user = interaction.user
