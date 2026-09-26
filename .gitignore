@@ -5,7 +5,6 @@ __pycache__/
 
 # Runtime data must stay local and must not be committed.
 data/*
-!data/.gitkeep
 
 # Legacy JSON storage should not be used after the SQLite migration.
 worship.json
