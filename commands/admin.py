@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -12,6 +12,7 @@ from commands.master import get_active_view
 
 
 ADMIN_USER_ID = "1246096914634510417"
+UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 ID_PATTERN = re.compile(r"^\d{17,20}$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 PERMISSION_COMMANDS = frozenset({"say", "button", "snipe"})
@@ -159,7 +160,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 sent_at = datetime.fromtimestamp(
                     int(deleted["created_at"] or deleted["deleted_at"]) / 1000,
                     tz=timezone.utc,
-                ).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                ).astimezone(UTC_PLUS_8).strftime("%Y-%m-%d %H:%M:%S %Z")
                 attachment_mark = " [含附件]" if deleted["attachments"] else ""
                 output_parts.append(
                     f"{index}. {sent_at}｜{deleted['author_name']}｜{content}{attachment_mark}"
