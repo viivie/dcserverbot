@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 EMBED_COLOR = 0xE7A0B4
 EMBED_TITLE = "✨ 虔誠的膜拜 ✨"
-EMBED_FOOTER = "向特定人士獻上誠摯的敬意"
+EMBED_FOOTER = "向特定的人獻上誠摯的敬意"
 
 
 def register_worship_someone(
