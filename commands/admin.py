@@ -15,7 +15,7 @@ ADMIN_USER_ID = "1246096914634510417"
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 ID_PATTERN = re.compile(r"^\d{17,20}$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 
@@ -23,6 +23,7 @@ COMMAND_INFO = {
     "help": ("查看自己可以使用的管理員指令（以私人訊息傳送）。", "&help"),
     "say": ("讓機器人在目前頻道發送指定內容。", "&say 內容（或 & 文字）"),
     "button": ("替指定認主訊息執行按鈕操作。", "&button 訊息ID 按鈕編號"),
+    "react": ("讓機器人對指定訊息加上一個或多個反應。", "&react 訊息ID 表情 [表情...]"),
     "snipe": ("查看目前頻道最近被刪除的訊息，最多 10 則。", "&snipe [數量 1-10]"),
     "grant": ("授權某個使用者使用一個或多個指令。", "&grant 使用者ID 指令 [指令...]"),
     "revoke": ("撤銷某個使用者的一個或多個指令權限。", "&revoke 使用者ID 指令 [指令...]"),
@@ -62,10 +63,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "snipe", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "snipe")
+            command for command in ("say", "button", "react", "snipe")
             if store.has_prefix_command(user_id, command)
         ]
 
@@ -140,6 +141,34 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 await view.admin_press(button_number)
             except ValueError as error:
                 await message.channel.send(str(error))
+            return True
+
+        if command == "react":
+            values = arguments.split()
+            if len(values) < 2 or not values[0].isdigit():
+                await message.channel.send("用法：&react 訊息ID 表情 [表情...]")
+                return True
+
+            target_message_id = int(values[0])
+            emojis = values[1:]
+            try:
+                target_message = await message.channel.fetch_message(target_message_id)
+                for emoji in emojis:
+                    await target_message.add_reaction(emoji)
+            except discord.NotFound:
+                await message.channel.send("找不到指定的訊息。")
+                return True
+            except discord.Forbidden:
+                await message.channel.send("機器人沒有讀取訊息或新增反應的權限。")
+                return True
+            except discord.HTTPException as error:
+                await message.channel.send(f"新增反應失敗：{error}")
+                return True
+
+            await message.channel.send(
+                f"已對訊息 {target_message_id} 加上反應：{' '.join(emojis)}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return True
 
         if command == "snipe":
@@ -242,7 +271,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&snipe"
+            + "。可授權：&say、&button、&react、&snipe"
         )
         return
 
