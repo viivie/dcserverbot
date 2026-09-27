@@ -48,7 +48,7 @@ def first_environment_name(*names: str) -> str:
 class Config:
     bot_token: str
     data_file: str
-    google_drive_key: str
+    google_drive_key_file: str
     google_drive_folder_id: str
     google_drive_filename: str
     google_drive_backup_interval: int
@@ -62,7 +62,7 @@ class Config:
             .removeprefix("Bot ")
             .strip(),
             data_file=str(BOT_DIR / "database.db"),
-            google_drive_key=os.getenv("GOOGLE_DRIVE_KEY", "").strip(),
+            google_drive_key_file=str(BOT_DIR / "credentials" / "google_drive.json"),
             google_drive_folder_id=os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip(),
             google_drive_filename=os.getenv("GOOGLE_DRIVE_FILENAME", "database.db").strip()
             or "database.db",

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -24,14 +23,14 @@ def _escape_drive_query(value: str) -> str:
 
 class GoogleDriveBackup:
     def __init__(self, config: Config):
-        self.key = config.google_drive_key
+        self.key_file = Path(config.google_drive_key_file)
         self.folder_id = config.google_drive_folder_id
         self.filename = config.google_drive_filename
         self.interval = config.google_drive_backup_interval
 
     @property
     def enabled(self) -> bool:
-        return bool(self.key and self.folder_id)
+        return self.key_file.is_file() and bool(self.folder_id)
 
     async def run_periodically(self, database_path: Path) -> None:
         if not self.enabled:
@@ -104,24 +103,14 @@ class GoogleDriveBackup:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
 
-        credentials_info = self._decode_key(self.key)
+        try:
+            credentials_info = json.loads(self.key_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"無法讀取 Google Drive 金鑰檔：{self.key_file}") from exc
+        if not isinstance(credentials_info, dict):
+            raise ValueError(f"Google Drive 金鑰檔必須是 JSON 物件：{self.key_file}")
         credentials = service_account.Credentials.from_service_account_info(
             credentials_info,
             scopes=[DRIVE_SCOPE],
         )
         return build("drive", "v3", credentials=credentials, cache_discovery=False)
-
-    @staticmethod
-    def _decode_key(value: str) -> dict:
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            try:
-                decoded = json.loads(base64.b64decode(value).decode("utf-8"))
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise ValueError(
-                    "GOOGLE_DRIVE_KEY 必須是服務帳號 JSON 或其 Base64 編碼"
-                ) from exc
-        if not isinstance(decoded, dict):
-            raise ValueError("GOOGLE_DRIVE_KEY 的內容必須是 JSON 物件")
-        return decoded

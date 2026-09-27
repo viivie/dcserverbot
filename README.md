@@ -15,7 +15,7 @@ python bot.py gateway
 資料會存在專案根目錄的 `database.db`。程式不再讀取舊的 JSON 資料檔。
 
 若要備份到 Google Drive，請建立服務帳號，把目標資料夾分享給服務帳號的 email，
-再在 `.env` 填入 `GOOGLE_DRIVE_KEY`（服務帳號 JSON 或 Base64）、
+再把服務帳號 JSON 金鑰放到 `credentials/google_drive.json`，並在 `.env` 填入
 `GOOGLE_DRIVE_FOLDER_ID`，以及可選的備份間隔 `GOOGLE_DRIVE_BACKUP_INTERVAL`（秒）。
 機器人會定期以 SQLite snapshot 覆蓋 Drive 裡的 `database.db`。
 
