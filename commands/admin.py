@@ -428,12 +428,14 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                     await message.channel.send("查詢使用者時發生錯誤。")
                     return True
 
-            description = (
+            description = ""
+            if note:
+                quoted_note = "\n".join(f"> {line}" for line in note.splitlines())
+                description += f"{quoted_note}\n\n"
+            description += (
                 f"你被授予了 {role.mention}\n"
                 "你是否接受這個身分組？"
             )
-            if note:
-                description += f"\n\n{note}"
 
             embed = discord.Embed(
                 title="🎁 身分組給予確認",
