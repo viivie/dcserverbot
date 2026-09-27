@@ -37,7 +37,6 @@ def _result_embed(
     discord_module: Any,
     actor: Any,
     target: str,
-    mode: str,
     outcome: str,
 ) -> Any:
     embed = discord_module.Embed(
@@ -66,7 +65,6 @@ def _animation_embed(
     discord_module: Any,
     actor: Any,
     target: str,
-    mode: str,
     status: str,
     progress: str,
 ) -> Any:
@@ -79,7 +77,6 @@ def _animation_embed(
         color=EMBED_COLOR,
     )
     embed.add_field(name="儀式狀態", value=status, inline=False)
-    embed.add_field(name="儀式模式", value=mode, inline=True)
     embed.add_field(name="進度", value=progress, inline=True)
     embed.set_footer(text="偉大的芙帽正在揭開命運的一角")
     return embed
@@ -123,7 +120,6 @@ def register_ritual(
                 discord_module,
                 interaction.user,
                 target,
-                mode_name,
                 "🛐 正在向芙帽祈禱，請求她揭示命運……",
                 "▱▱▱▱▱▱",
             ),
@@ -142,7 +138,6 @@ def register_ritual(
                     discord_module,
                     interaction.user,
                     target,
-                    mode_name,
                     status,
                     progress,
                 ),
@@ -156,7 +151,6 @@ def register_ritual(
                 discord_module,
                 interaction.user,
                 target,
-                mode_name,
                 outcome,
             ),
         )
