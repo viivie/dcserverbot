@@ -7,6 +7,7 @@ import random
 from typing import Any, TYPE_CHECKING
 
 import discord
+from discord import app_commands as discord_app_commands
 
 if TYPE_CHECKING:
     from commands.context import CommandContext
@@ -109,7 +110,7 @@ def register_ritual(
     async def ritual(
         interaction: Any,
         target: str,
-        mode: app_commands.Choice[str],
+        mode: discord_app_commands.Choice[str],
     ) -> None:
         target = " ".join(target.split())[:80] or "神秘對象"
         mode_name = mode.value
