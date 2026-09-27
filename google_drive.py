@@ -21,6 +21,11 @@ def _escape_drive_query(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _is_storage_quota_error(error: Exception) -> bool:
+    response = getattr(error, "resp", None)
+    return getattr(response, "status", None) == 403 and "storageQuotaExceeded" in str(error)
+
+
 class GoogleDriveBackup:
     def __init__(self, config: Config):
         self.key_file = Path(config.google_drive_key_file)
@@ -41,8 +46,14 @@ class GoogleDriveBackup:
                 await asyncio.to_thread(self.backup_now, database_path)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                LOGGER.exception("Google Drive database backup failed")
+            except Exception as error:
+                if _is_storage_quota_error(error):
+                    LOGGER.error(
+                        "Google Drive backup needs a Shared Drive: service accounts "
+                        "cannot upload to My Drive because they have no storage quota"
+                    )
+                else:
+                    LOGGER.exception("Google Drive database backup failed")
             await asyncio.sleep(self.interval)
 
     def backup_now(self, database_path: Path) -> None:
@@ -57,7 +68,14 @@ class GoogleDriveBackup:
             )
             files = (
                 service.files()
-                .list(q=query, spaces="drive", pageSize=1, fields="files(id,name)")
+                .list(
+                    q=query,
+                    spaces="drive",
+                    pageSize=1,
+                    fields="files(id,name)",
+                    includeItemsFromAllDrives=True,
+                    supportsAllDrives=True,
+                )
                 .execute()
                 .get("files", [])
             )
@@ -70,13 +88,18 @@ class GoogleDriveBackup:
                 resumable=False,
             )
             if files:
-                service.files().update(fileId=files[0]["id"], media_body=media).execute()
+                service.files().update(
+                    fileId=files[0]["id"],
+                    media_body=media,
+                    supportsAllDrives=True,
+                ).execute()
                 LOGGER.info("backed up %s to Google Drive", database_path.name)
             else:
                 service.files().create(
                     body={"name": self.filename, "parents": [self.folder_id]},
                     media_body=media,
                     fields="id",
+                    supportsAllDrives=True,
                 ).execute()
                 LOGGER.info("created Google Drive backup %s", self.filename)
         finally:
