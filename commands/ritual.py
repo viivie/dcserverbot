@@ -43,8 +43,8 @@ def _result_embed(
     embed = discord_module.Embed(
         title="🔮 神秘儀式預測結果 🔮",
         description=(
-            f"{actor.mention} 為「{target}」進行神秘儀式，\n"
-            "預測下一場的結果。"
+            f"{actor.mention} 請求了芙帽預測了「{target}」的下一場對局結果\n"
+            "偉大的芙帽完成了神秘儀式，並揭示了命運的結果……"
         ),
         color=EMBED_COLOR,
     )
@@ -78,8 +78,8 @@ def _animation_embed(
     embed = discord_module.Embed(
         title="🔮 神秘儀式進行中 🔮",
         description=(
-            f"{actor.mention} 正在為「{target}」\n"
-            "進行神秘儀式，預測下一場的結果……"
+            f"{actor.mention} 請求了芙帽預測了「{target}」的下一場對局結果\n"
+            "芙帽正在進行神秘儀式，並嘗試預測下一場的結果……"
         ),
         color=EMBED_COLOR,
     )
@@ -98,7 +98,7 @@ def register_ritual(
 ) -> None:
     """Register the /ritual weighted draw command."""
 
-    @tree.command(name="ritual", description="進行神秘儀式，預測某人下一場的結果")
+    @tree.command(name="神秘儀式", description="進行神秘儀式，預測某人下一場的結果")
     @app_commands.guild_only()
     @app_commands.describe(
         target="輸入名字或稱號",
