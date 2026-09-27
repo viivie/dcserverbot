@@ -115,8 +115,21 @@ def register_ritual(
         target = " ".join(target.split())[:80] or "神秘對象"
         mode_name = mode.value if mode is not None else "普通"
         await interaction.response.defer()
+        # Create the initial card first, then immediately edit it again so
+        # Discord displays the edited marker before the visible animation.
+        await interaction.edit_original_response(
+            content=None,
+            embed=_animation_embed(
+                discord_module,
+                interaction.user,
+                target,
+                mode_name,
+                "🛐 正在向芙帽祈禱，請求她揭示命運……",
+                "▱▱▱▱▱▱",
+            ),
+        )
         for status, progress, delay in (
-            ("🛐 正在向芙帽祈禱，請求她揭示命運……", "▰▱▱▱▱▱", 0.8),
+            ("🛐 正在向芙帽祈禱，請求她揭示命運……", "▰▱▱▱▱▱", 1.8),
             ("🔮 芙帽正在喚醒沉睡的神性……", "▰▰▱▱▱▱", 1),
             ("🌌 芙帽嘗試召回流落於多重宇宙的命運之星……", "▰▰▰▱▱▱", 1.2),
             ("👁️‍🗨️ 偉大的芙帽正在窺視時空，並從中干涉因果……", "▰▰▰▰▱▱", 1.5),
