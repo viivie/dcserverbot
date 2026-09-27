@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from config import ID_RE, TARGET_USERNAME, Config
+from config import ID_RE, TARGET_USER_ID, TARGET_USERNAME, Config
 from storage import WorshipStore
 
 LOGGER = logging.getLogger("fumao-worship-bot")
@@ -61,7 +61,7 @@ class DiscordApi:
             return False, 0, None
 
     def resolve_target(self, guild_id: str | None) -> tuple[str | None, str | None]:
-        override = self.config.target_user_id if ID_RE.fullmatch(self.config.target_user_id) else None
+        override = TARGET_USER_ID if ID_RE.fullmatch(TARGET_USER_ID) else None
         if not guild_id or not self.config.bot_token:
             return override, None
         now_ms = int(time.time() * 1000)
@@ -87,10 +87,10 @@ class DiscordApi:
                     return remember(user["id"], user_avatar_url(user))
 
         if not override:
-            query = urlencode({"query": self.config.target_username or TARGET_USERNAME, "limit": 10})
+            query = urlencode({"query": TARGET_USERNAME, "limit": 10})
             ok, status, body = self.get(f"/guilds/{guild_id}/members/search?{query}")
             if ok and isinstance(body, list):
-                wanted = self.config.target_username.lower()
+                wanted = TARGET_USERNAME.lower()
                 for item in body:
                     user = read_user(item.get("user")) if isinstance(item, dict) else None
                     if user and user["username"].lower() == wanted:

@@ -47,9 +47,6 @@ def first_environment_name(*names: str) -> str:
 @dataclass(frozen=True)
 class Config:
     bot_token: str
-    guild_id: str
-    target_username: str
-    target_user_id: str
     data_file: str
     google_drive_key: str
     google_drive_folder_id: str
@@ -64,9 +61,6 @@ class Config:
             bot_token=first_environment_value("DISCORD_BOT_TOKEN", "DISCORD_TOKEN", "BOT_TOKEN", "TOKEN")
             .removeprefix("Bot ")
             .strip(),
-            guild_id=os.getenv("DISCORD_GUILD_ID", "").strip(),
-            target_username=os.getenv("DISCORD_TARGET_USERNAME", TARGET_USERNAME).strip().lstrip("@"),
-            target_user_id=os.getenv("DISCORD_TARGET_USER_ID", TARGET_USER_ID).strip(),
             data_file=str(BOT_DIR / "database.db"),
             google_drive_key=os.getenv("GOOGLE_DRIVE_KEY", "").strip(),
             google_drive_folder_id=os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip(),

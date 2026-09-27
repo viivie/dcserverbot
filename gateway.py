@@ -7,7 +7,7 @@ import logging
 
 from commands import register_all
 from commands.context import CommandContext
-from config import ID_RE, Config
+from config import Config
 from discord_api import DiscordApi
 from google_drive import GoogleDriveBackup
 from storage import WorshipStore
@@ -49,13 +49,7 @@ def run_gateway(config: Config) -> None:
             except discord.HTTPException as error:
                 LOGGER.warning("could not remove stale global /worship: %s", error)
 
-            if config.guild_id and ID_RE.fullmatch(config.guild_id):
-                guild = discord.Object(id=int(config.guild_id))
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                LOGGER.info("synced /worship to guild %s", config.guild_id)
-            else:
-                LOGGER.info("guild sync will run after login")
+            LOGGER.info("guild sync will run after login")
 
     client = GatewayClient()
     register_all(client.tree, discord, app_commands, context)
@@ -68,7 +62,7 @@ def run_gateway(config: Config) -> None:
                 drive_backup.run_periodically(store.path),
                 name="google-drive-database-backup",
             )
-        if client.commands_synced or config.guild_id:
+        if client.commands_synced:
             return
         for guild in client.guilds:
             try:
