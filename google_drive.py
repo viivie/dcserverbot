@@ -14,7 +14,7 @@ from config import Config
 
 
 LOGGER = logging.getLogger("fumao-worship-bot.google-drive")
-DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 def _escape_drive_query(value: str) -> str:
@@ -28,14 +28,19 @@ def _is_storage_quota_error(error: Exception) -> bool:
 
 class GoogleDriveBackup:
     def __init__(self, config: Config):
-        self.key_file = Path(config.google_drive_key_file)
+        self.client_file = Path(config.google_drive_client_file)
+        self.token_file = Path(config.google_drive_token_file)
         self.folder_id = config.google_drive_folder_id
         self.filename = config.google_drive_filename
         self.interval = config.google_drive_backup_interval
 
     @property
+    def configured(self) -> bool:
+        return self.client_file.is_file() and bool(self.folder_id)
+
+    @property
     def enabled(self) -> bool:
-        return self.key_file.is_file() and bool(self.folder_id)
+        return self.configured and self.token_file.is_file()
 
     async def run_periodically(self, database_path: Path) -> None:
         if not self.enabled:
@@ -123,17 +128,25 @@ class GoogleDriveBackup:
         return snapshot_path
 
     def _build_service(self):
-        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
 
+        if not self.token_file.is_file():
+            raise RuntimeError(
+                "找不到 Google Drive OAuth token，請先執行：python google_drive_auth.py"
+            )
         try:
-            credentials_info = json.loads(self.key_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"無法讀取 Google Drive 金鑰檔：{self.key_file}") from exc
-        if not isinstance(credentials_info, dict):
-            raise ValueError(f"Google Drive 金鑰檔必須是 JSON 物件：{self.key_file}")
-        credentials = service_account.Credentials.from_service_account_info(
-            credentials_info,
-            scopes=[DRIVE_SCOPE],
-        )
+            credentials = Credentials.from_authorized_user_file(
+                str(self.token_file),
+                scopes=[DRIVE_SCOPE],
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"無法讀取 Google Drive OAuth token：{self.token_file}") from exc
+
+        if credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+            self.token_file.write_text(credentials.to_json(), encoding="utf-8")
+        if not credentials.valid:
+            raise RuntimeError("Google Drive OAuth token 無效，請重新執行：python google_drive_auth.py")
         return build("drive", "v3", credentials=credentials, cache_discovery=False)

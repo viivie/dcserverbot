@@ -57,6 +57,8 @@ def run_gateway(config: Config) -> None:
     @client.event
     async def on_ready() -> None:
         LOGGER.info("logged in as %s", client.user)
+        if drive_backup.configured and not drive_backup.enabled:
+            LOGGER.warning("Google Drive OAuth token missing; run python google_drive_auth.py")
         if client.backup_task is None and drive_backup.enabled:
             client.backup_task = asyncio.create_task(
                 drive_backup.run_periodically(store.path),

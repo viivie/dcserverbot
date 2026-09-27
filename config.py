@@ -48,7 +48,8 @@ def first_environment_name(*names: str) -> str:
 class Config:
     bot_token: str
     data_file: str
-    google_drive_key_file: str
+    google_drive_client_file: str
+    google_drive_token_file: str
     google_drive_folder_id: str
     google_drive_filename: str
     google_drive_backup_interval: int
@@ -57,12 +58,22 @@ class Config:
     def from_env(cls) -> "Config":
         load_dotenv(BOT_DIR / ".env")
         load_dotenv(ROOT / ".env")
+        client_file = Path(
+            os.getenv(
+                "GOOGLE_DRIVE_OAUTH_CLIENT_FILE",
+                str(BOT_DIR / "credentials" / "google_drives.json"),
+            ).strip()
+        )
         return cls(
             bot_token=first_environment_value("DISCORD_BOT_TOKEN", "DISCORD_TOKEN", "BOT_TOKEN", "TOKEN")
             .removeprefix("Bot ")
             .strip(),
             data_file=str(BOT_DIR / "database.db"),
-            google_drive_key_file=str(BOT_DIR / "credentials" / "google_drive.json"),
+            google_drive_client_file=str(client_file),
+            google_drive_token_file=os.getenv(
+                "GOOGLE_DRIVE_OAUTH_TOKEN_FILE",
+                str(client_file.with_name("google_drive_token.json")),
+            ).strip(),
             google_drive_folder_id=os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip(),
             google_drive_filename=os.getenv("GOOGLE_DRIVE_FILENAME", "database.db").strip()
             or "database.db",
