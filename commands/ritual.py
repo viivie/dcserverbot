@@ -58,7 +58,12 @@ def _result_embed(
         value=outcome,
         inline=False,
     )
-    embed.set_footer(text="願芙帽的祝福與你同在")
+    embed.add_field(
+        name="預測對象",
+        value=target,
+        inline=False,
+    )
+    embed.set_footer(text="神秘儀式已完成｜偉大的芙帽已揭示命運")
     return embed
 
 
@@ -81,7 +86,7 @@ def _animation_embed(
     embed.add_field(name="儀式狀態", value=status, inline=False)
     embed.add_field(name="儀式模式", value=mode, inline=True)
     embed.add_field(name="進度", value=progress, inline=True)
-    embed.set_footer(text="請稍候，請稍候，偉大的芙帽正在揭開命運的一角")
+    embed.set_footer(text="偉大的芙帽正在揭開命運的一角")
     return embed
 
 
@@ -97,30 +102,30 @@ def register_ritual(
     @app_commands.guild_only()
     @app_commands.describe(
         target="輸入名字或稱號",
-        mode="選擇儀式模式",
+        mode="選擇儀式模式，預設為正常",
     )
     @app_commands.choices(
         mode=[
-            app_commands.Choice(name="普通", value="普通"),
-            app_commands.Choice(name="公正", value="公正"),
-            app_commands.Choice(name="屠夫變強", value="屠夫變強"),
-            app_commands.Choice(name="人類變強", value="人類變強"),
+            app_commands.Choice(name="正常", value="普通"),
+            app_commands.Choice(name="絕對的公平", value="公正"),
+            app_commands.Choice(name="命運偏向了屠夫", value="屠夫變強"),
+            app_commands.Choice(name="命運偏向了人類", value="人類變強"),
         ]
     )
     async def ritual(
         interaction: Any,
         target: str,
-        mode: discord_app_commands.Choice[str],
+        mode: discord_app_commands.Choice[str] = None,
     ) -> None:
         target = " ".join(target.split())[:80] or "神秘對象"
-        mode_name = mode.value
+        mode_name = mode.value if mode is not None else "普通"
         await interaction.response.defer()
         for status, progress, delay in (
-            ("請稍候，請稍候，偉大的芙帽正在喚醒沉睡的神性……", "▰▱▱▱▱", 0.45),
-            ("請稍候，請稍候，至高的芙帽正在召回散落的星辰……", "▰▰▱▱▱", 0.55),
-            ("請稍候，請稍候，偉大的芙帽正在窺視時空的因果……", "▰▰▰▱▱", 0.55),
-            ("請稍候，請稍候，至高的存在正在裁定命運的分歧……", "▰▰▰▰▱", 0.65),
-            ("請稍候，請稍候，偉大的芙帽正在揭開命運的一角……", "▰▰▰▰▰", 0.7),
+            ("🔮 芙帽正在喚醒沉睡的神性……", "▰▱▱▱▱", 1),
+            ("🌌 芙帽嘗試召回流落於多重宇宙的命運之星……", "▰▰▱▱▱", 1.2),
+            ("👁️‍🗨️ 偉大的芙帽正在窺視時空，並從中干涉因果……", "▰▰▰▱▱", 1.5),
+            ("⚖️ 至高的存在嘗試裁定命運的分歧……", "▰▰▰▰▱", 1.8),
+            ("🌠 偉大的芙帽正在揭開命運的一角……", "▰▰▰▰▰", 2),
         ):
             await interaction.edit_original_response(
                 content=None,
