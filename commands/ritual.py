@@ -41,17 +41,12 @@ def _result_embed(
     outcome: str,
 ) -> Any:
     embed = discord_module.Embed(
-        title="🔮 神秘儀式預測結果 🔮",
+        title="🔮 偉大的存在接受了信徒的請求，完成了神秘儀式 🔮",
         description=(
             f"{actor.mention} 請求了芙帽預測了「{target}」的下一場對局結果\n"
             "偉大的芙帽完成了神秘儀式，並揭示了命運的結果……"
         ),
         color=EMBED_COLOR,
-    )
-    embed.add_field(
-        name="預測情況",
-        value=mode,
-        inline=True,
     )
     embed.add_field(
         name="下一場結果",
@@ -121,11 +116,12 @@ def register_ritual(
         mode_name = mode.value if mode is not None else "普通"
         await interaction.response.defer()
         for status, progress, delay in (
-            ("🔮 芙帽正在喚醒沉睡的神性……", "▰▱▱▱▱", 1),
-            ("🌌 芙帽嘗試召回流落於多重宇宙的命運之星……", "▰▰▱▱▱", 1.2),
-            ("👁️‍🗨️ 偉大的芙帽正在窺視時空，並從中干涉因果……", "▰▰▰▱▱", 1.5),
-            ("⚖️ 至高的存在嘗試裁定命運的分歧……", "▰▰▰▰▱", 1.8),
-            ("🌠 偉大的芙帽正在揭開命運的一角……", "▰▰▰▰▰", 2),
+            ("🛐 正在向芙帽祈禱，請求她揭示命運……", "▰▱▱▱▱▱", 0.8),
+            ("🔮 芙帽正在喚醒沉睡的神性……", "▰▰▱▱▱▱", 1),
+            ("🌌 芙帽嘗試召回流落於多重宇宙的命運之星……", "▰▰▰▱▱▱", 1.2),
+            ("👁️‍🗨️ 偉大的芙帽正在窺視時空，並從中干涉因果……", "▰▰▰▰▱▱", 1.5),
+            ("⚖️ 至高的存在嘗試裁定命運的分歧……", "▰▰▰▰▰▱", 1.8),
+            ("🌠 偉大的芙帽正在揭開命運的一角……", "▰▰▰▰▰▰", 2),
         ):
             await interaction.edit_original_response(
                 content=None,
