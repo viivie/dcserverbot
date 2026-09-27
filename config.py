@@ -51,6 +51,10 @@ class Config:
     target_username: str
     target_user_id: str
     data_file: str
+    google_drive_key: str
+    google_drive_folder_id: str
+    google_drive_filename: str
+    google_drive_backup_interval: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -63,8 +67,21 @@ class Config:
             guild_id=os.getenv("DISCORD_GUILD_ID", "").strip(),
             target_username=os.getenv("DISCORD_TARGET_USERNAME", TARGET_USERNAME).strip().lstrip("@"),
             target_user_id=os.getenv("DISCORD_TARGET_USER_ID", TARGET_USER_ID).strip(),
-            data_file=os.getenv(
-                "DATA_FILE",
-                os.getenv("WORSHIP_DATA_FILE", str(BOT_DIR / "data" / "worship.sqlite3")),
-            ).strip(),
+            data_file=str(BOT_DIR / "database.db"),
+            google_drive_key=os.getenv("GOOGLE_DRIVE_KEY", "").strip(),
+            google_drive_folder_id=os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip(),
+            google_drive_filename=os.getenv("GOOGLE_DRIVE_FILENAME", "database.db").strip()
+            or "database.db",
+            google_drive_backup_interval=_positive_int(
+                os.getenv("GOOGLE_DRIVE_BACKUP_INTERVAL", "3600"),
+                default=3600,
+            ),
         )
+
+
+def _positive_int(value: str, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default

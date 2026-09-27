@@ -5,6 +5,5 @@ __pycache__/
 
 # Runtime data must stay local and must not be committed.
 data/*
-
-# Legacy JSON storage should not be used after the SQLite migration.
-worship.json
+database.db
+database.db-*

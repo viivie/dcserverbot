@@ -9,6 +9,7 @@ from commands import register_all
 from commands.context import CommandContext
 from config import ID_RE, Config
 from discord_api import DiscordApi
+from google_drive import GoogleDriveBackup
 from storage import WorshipStore
 
 LOGGER = logging.getLogger("fumao-worship-bot")
@@ -25,6 +26,7 @@ def run_gateway(config: Config) -> None:
         raise RuntimeError("Gateway 模式需要安裝 discord.py：pip install -r requirements.txt") from exc
 
     store = WorshipStore(config.data_file)
+    drive_backup = GoogleDriveBackup(config)
     context = CommandContext(config, store, DiscordApi(config, store))
     intents = discord.Intents.default()
     intents.message_content = True
@@ -34,6 +36,7 @@ def run_gateway(config: Config) -> None:
             super().__init__(intents=intents, activity=discord.CustomActivity(name=PRESENCE_TEXT))
             self.tree = app_commands.CommandTree(self)
             self.commands_synced = False
+            self.backup_task: asyncio.Task | None = None
 
         async def setup_hook(self) -> None:
             # Remove the old global command. The bot only publishes guild commands,
@@ -60,6 +63,11 @@ def run_gateway(config: Config) -> None:
     @client.event
     async def on_ready() -> None:
         LOGGER.info("logged in as %s", client.user)
+        if client.backup_task is None and drive_backup.enabled:
+            client.backup_task = asyncio.create_task(
+                drive_backup.run_periodically(store.path),
+                name="google-drive-database-backup",
+            )
         if client.commands_synced or config.guild_id:
             return
         for guild in client.guilds:

@@ -14,16 +14,14 @@ from commands.worship import next_streak, taipei_today
 
 class WorshipStore:
     def __init__(self, data_file: str):
-        self.path, legacy_path = self._resolve_path(data_file)
+        self.path = self._resolve_path(data_file)
         self.lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
-        if legacy_path:
-            self._migrate_json(legacy_path)
 
     @staticmethod
-    def _resolve_path(data_file: str) -> tuple[Path, Path | None]:
-        raw = (data_file or "data/worship.sqlite3").strip()
+    def _resolve_path(data_file: str) -> Path:
+        raw = (data_file or "database.db").strip()
         if raw.startswith("sqlite:///"):
             raw = raw.removeprefix("sqlite:///")
 
@@ -31,12 +29,7 @@ class WorshipStore:
         if not path.is_absolute():
             path = Path(__file__).resolve().parent / path
 
-        # Keep old deployments safe: import an existing JSON file into SQLite.
-        if path.suffix.lower() == ".json":
-            legacy_path = path
-            path = path.parent / "data" / "worship.sqlite3"
-            return path, legacy_path if legacy_path.is_file() else None
-        return path, None
+        return path
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -104,48 +97,6 @@ class WorshipStore:
                 connection.execute(
                     "ALTER TABLE deleted_messages ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0"
                 )
-
-    def _migrate_json(self, legacy_path: Path) -> None:
-        try:
-            value = json.loads(legacy_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"無法讀取舊 JSON 資料檔：{legacy_path}") from exc
-        if not isinstance(value, dict):
-            raise RuntimeError(f"舊 JSON 資料格式錯誤：{legacy_path}")
-
-        actors = value.get("actors", {})
-        targets = value.get("targets", {})
-        with self.lock, self._connect() as connection:
-            existing = connection.execute("SELECT COUNT(*) FROM actors").fetchone()[0]
-            existing += connection.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
-            if existing:
-                return
-            connection.execute(
-                "INSERT OR REPLACE INTO metadata(key, value) VALUES ('total', ?)",
-                (str(int(value.get("total", 0))),),
-            )
-            if isinstance(actors, dict):
-                for actor_id, row in actors.items():
-                    if isinstance(row, dict):
-                        connection.execute(
-                            "INSERT OR REPLACE INTO actors(actor_id, streak, last_date) VALUES (?, ?, ?)",
-                            (str(actor_id), int(row.get("streak", 0)), row.get("lastDate")),
-                        )
-            if isinstance(targets, dict):
-                for guild_id, row in targets.items():
-                    if isinstance(row, dict):
-                        connection.execute(
-                            """
-                            INSERT OR REPLACE INTO targets(guild_id, user_id, avatar_url, refreshed_at)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (
-                                str(guild_id),
-                                str(row.get("userId", "")),
-                                str(row.get("avatarUrl", "")),
-                                int(row.get("refreshedAt", 0)),
-                            ),
-                        )
 
     def total(self) -> int:
         with self.lock, self._connect() as connection:
