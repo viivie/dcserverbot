@@ -15,7 +15,7 @@ ADMIN_USER_ID = "1246096914634510417"
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 ID_PATTERN = re.compile(r"^\d{17,20}$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 
@@ -24,6 +24,8 @@ COMMAND_INFO = {
     "say": ("讓機器人在目前頻道發送指定內容。", "&say 內容（或 & 文字）"),
     "button": ("替指定認主訊息執行按鈕操作。", "&button 訊息ID 按鈕編號"),
     "react": ("讓機器人對指定訊息加上一個或多個反應。", "&react 訊息ID 表情 [表情...]"),
+    "delete": ("刪除目前頻道最近的指定數量訊息。", "&delete 數量（最多 100）"),
+    "give": ("要求使用者確認是否接受指定身分組。", "&give 身分組ID 人ID [備註]"),
     "snipe": ("查看目前頻道最近被刪除的訊息，最多 10 則。", "&snipe [數量 1-10]"),
     "grant": ("授權某個使用者使用一個或多個指令。", "&grant 使用者ID 指令 [指令...]"),
     "revoke": ("撤銷某個使用者的一個或多個指令權限。", "&revoke 使用者ID 指令 [指令...]"),
@@ -63,10 +65,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe")
+            command for command in ("say", "button", "react", "snipe", "delete", "give")
             if store.has_prefix_command(user_id, command)
         ]
 
@@ -89,6 +91,194 @@ def _has_permission(store: Any, user_id: str, command: str) -> bool:
         return False
     return store.has_prefix_command(user_id, command)
 
+
+class DeleteConfirmView(discord.ui.View):
+    def __init__(self, requester_id: int, channel: Any, count: int) -> None:
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.channel = channel
+        self.count = count
+        self.message: discord.Message | None = None
+        self.resolved = False
+
+    async def _deny_other_user(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.requester_id:
+            return False
+        await interaction.response.send_message(
+            "這不是你發起的刪除確認喔😡",
+            ephemeral=True,
+        )
+        return True
+
+    @discord.ui.button(label="確認刪除", style=discord.ButtonStyle.danger)
+    async def confirm_callback(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if await self._deny_other_user(interaction):
+            return
+        if self.resolved:
+            await interaction.response.send_message("這個刪除請求已經處理過了。", ephemeral=True)
+            return
+
+        self.resolved = True
+        deleted_count = await self._delete_recent_messages()
+        embed = discord.Embed(
+            title="✅ 訊息刪除完成",
+            description=(
+                f"頻道：{getattr(self.channel, 'mention', self.channel)}\n"
+                f"已刪除 **{deleted_count}** 則訊息。"
+            ),
+            color=0x2ECC71,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel_callback(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if await self._deny_other_user(interaction):
+            return
+        if self.resolved:
+            await interaction.response.send_message("這個刪除請求已經處理過了。", ephemeral=True)
+            return
+
+        self.resolved = True
+        embed = discord.Embed(
+            title="已取消刪除",
+            description=f"頻道：{getattr(self.channel, 'mention', self.channel)}",
+            color=0x95A5A6,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        if self.resolved or self.message is None:
+            return
+        self.resolved = True
+        embed = discord.Embed(
+            title="刪除確認已過期",
+            description="請重新使用 `&delete 數量`。",
+            color=0x95A5A6,
+        )
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            pass
+
+    async def _delete_recent_messages(self) -> int:
+        if self.message is None:
+            return 0
+
+        messages = []
+        async for candidate in self.channel.history(limit=self.count + 1):
+            if candidate.id == self.message.id:
+                continue
+            messages.append(candidate)
+            if len(messages) >= self.count:
+                break
+
+        if not messages:
+            return 0
+
+        try:
+            if len(messages) == 1:
+                await messages[0].delete()
+            else:
+                await self.channel.delete_messages(messages, reason="admin delete command")
+        except discord.HTTPException:
+            deleted_count = 0
+            for message in messages:
+                try:
+                    await message.delete()
+                    deleted_count += 1
+                except discord.HTTPException:
+                    pass
+            return deleted_count
+        return len(messages)
+
+
+class GiveRoleConfirmView(discord.ui.View):
+    def __init__(self, recipient: discord.Member, role: discord.Role) -> None:
+        super().__init__(timeout=None)
+        self.recipient = recipient
+        self.role = role
+        self.message: discord.Message | None = None
+        self.resolved = False
+
+    async def _deny_other_user(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.recipient.id:
+            return False
+        await interaction.response.send_message(
+            "這不是給你的身分組喔😡",
+            ephemeral=True,
+        )
+        return True
+
+    @discord.ui.button(label="接受給予", style=discord.ButtonStyle.success)
+    async def accept_callback(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if await self._deny_other_user(interaction):
+            return
+        if self.resolved:
+            await interaction.response.send_message("這個身分組請求已經處理過了。", ephemeral=True)
+            return
+
+        self.resolved = True
+        try:
+            await self.recipient.add_roles(
+                self.role,
+                reason="User accepted an admin role grant request",
+            )
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ 身分組給予失敗",
+                description="機器人沒有管理這個身分組的權限，或身分組階級高於機器人。",
+                color=0xE74C3C,
+            )
+        except discord.HTTPException:
+            embed = discord.Embed(
+                title="❌ 身分組給予失敗",
+                description="Discord API 暫時無法完成這次操作。",
+                color=0xE74C3C,
+            )
+        else:
+            embed = discord.Embed(
+                title="✅ 已接受身分組",
+                description=f"{self.recipient.mention} 已接受 {self.role.mention}。",
+                color=0x2ECC71,
+            )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    @discord.ui.button(label="拒絕", style=discord.ButtonStyle.danger)
+    async def reject_callback(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if await self._deny_other_user(interaction):
+            return
+        if self.resolved:
+            await interaction.response.send_message("這個身分組請求已經處理過了。", ephemeral=True)
+            return
+
+        self.resolved = True
+        embed = discord.Embed(
+            title="已拒絕身分組",
+            description=f"{self.recipient.mention} 拒絕接受 {self.role.mention}。",
+            color=0x95A5A6,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
 
 async def handle_admin_message(message: discord.Message, store: Any) -> bool:
     """Handle one permitted prefix command and return whether it was handled."""
@@ -169,6 +359,100 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 f"已對訊息 {target_message_id} 加上反應：{' '.join(emojis)}",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            return True
+
+        if command == "delete":
+            if not arguments.strip().isdigit():
+                await message.channel.send("用法：&delete 數量（最多 100）")
+                return True
+
+            count = int(arguments.strip())
+            if count < 1 or count > 100:
+                await message.channel.send("刪除數量必須介於 1 到 100。")
+                return True
+
+            embed = discord.Embed(
+                title="⚠️ 確認刪除訊息",
+                description=(
+                    f"頻道：{getattr(message.channel, 'mention', message.channel)}\n"
+                    f"將刪除最近的 **{count}** 則訊息。\n\n"
+                    "確認後無法復原，是否繼續？"
+                ),
+                color=0xE74C3C,
+            )
+            view = DeleteConfirmView(message.author.id, message.channel, count)
+            confirmation = await message.channel.send(
+                embed=embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            view.message = confirmation
+            return True
+
+        if command == "give":
+            values = arguments.split(maxsplit=2)
+            if (
+                len(values) < 2
+                or not ID_PATTERN.fullmatch(values[0])
+                or not ID_PATTERN.fullmatch(values[1])
+            ):
+                await message.channel.send("用法：&give 身分組ID 人ID [備註]")
+                return True
+
+            role_id = int(values[0])
+            member_id = int(values[1])
+            note = values[2].strip()[:1000] if len(values) == 3 else ""
+            if message.guild is None:
+                await message.channel.send("這個指令只能在伺服器頻道使用。")
+                return True
+
+            role = message.guild.get_role(role_id)
+            if role is None:
+                await message.channel.send("找不到指定的身分組。")
+                return True
+            if role.is_default() or role.managed:
+                await message.channel.send("這個身分組不能由機器人給予。")
+                return True
+            if message.guild.me is not None and role >= message.guild.me.top_role:
+                await message.channel.send("這個身分組的階級高於或等於機器人，無法給予。")
+                return True
+
+            member = message.guild.get_member(member_id)
+            if member is None:
+                try:
+                    member = await message.guild.fetch_member(member_id)
+                except discord.NotFound:
+                    await message.channel.send("找不到指定的使用者。")
+                    return True
+                except discord.HTTPException:
+                    await message.channel.send("查詢使用者時發生錯誤。")
+                    return True
+
+            description = (
+                f"你被授予了 {role.mention}\n"
+                "你是否接受這個身分組？"
+            )
+            if note:
+                description += f"\n\n{note}"
+
+            embed = discord.Embed(
+                title="🎁 身分組給予確認",
+                description=description,
+                color=0xE7A0B4,
+            )
+            view = GiveRoleConfirmView(member, role)
+            confirmation = await message.channel.send(
+                content=member.mention,
+                embed=embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=True,
+                    everyone=False,
+                    replied_user=False,
+                ),
+            )
+            view.message = confirmation
             return True
 
         if command == "snipe":
@@ -271,7 +555,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give"
         )
         return
 
