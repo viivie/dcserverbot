@@ -21,7 +21,7 @@ SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 
 COMMAND_INFO = {
     "help": ("查看自己可以使用的管理員指令（以私人訊息傳送）。", "&help"),
-    "say": ("讓機器人在目前頻道發送指定內容。", "&say 內容"),
+    "say": ("讓機器人在目前頻道發送指定內容。", "&say 內容（或 & 文字）"),
     "button": ("替指定認主訊息執行按鈕操作。", "&button 訊息ID 按鈕編號"),
     "snipe": ("查看目前頻道最近被刪除的訊息，最多 10 則。", "&snipe [數量 1-10]"),
     "grant": ("授權某個使用者使用一個或多個指令。", "&grant 使用者ID 指令 [指令...]"),
@@ -38,19 +38,26 @@ def _canonical_command(command: str) -> str:
 def _parse_prefix(content: str) -> tuple[str, str, bool] | None:
     content = content.strip()
     if content.startswith("&!"):
-        body = content[2:].lstrip()
+        raw_body = content[2:]
         silent = True
     elif content.startswith("&"):
-        body = content[1:].lstrip()
+        raw_body = content[1:]
         silent = False
     else:
         return None
 
+    shorthand = not raw_body or raw_body[:1].isspace()
+    body = raw_body.lstrip()
     if not body:
-        return None
+        return "say", "", silent
 
     parts = body.split(maxsplit=1)
-    return _canonical_command(parts[0]), parts[1] if len(parts) == 2 else "", silent
+    command = _canonical_command(parts[0])
+    if command in COMMAND_INFO:
+        return command, parts[1] if len(parts) == 2 else "", silent
+
+    # Shorthand: & 文字 / &! 文字 are both equivalent to say.
+    return ("say", body, silent) if shorthand else None
 
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:

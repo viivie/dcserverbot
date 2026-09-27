@@ -241,6 +241,29 @@ class WorshipStore:
             )
             return cursor.rowcount > 0
 
+    def has_master_relationship(self, guild_id: str, actor_id: str, master_id: str) -> bool:
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM master_relationships
+                WHERE guild_id = ? AND actor_id = ? AND master_id = ?
+                """,
+                (guild_id, actor_id, master_id),
+            ).fetchone()
+            return row is not None
+
+    def remove_master(self, guild_id: str, actor_id: str, master_id: str) -> bool:
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM master_relationships
+                WHERE guild_id = ? AND actor_id = ? AND master_id = ?
+                """,
+                (guild_id, actor_id, master_id),
+            )
+            return cursor.rowcount > 0
+
     def list_masters(self, guild_id: str, actor_id: str) -> list[str]:
         with self.lock, self._connect() as connection:
             rows = connection.execute(

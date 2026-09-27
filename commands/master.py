@@ -14,15 +14,15 @@ if TYPE_CHECKING:
 
 EMBED_COLOR = 0xE7A0B4
 EMBED_TITLE = "認主"
-ACTIVE_VIEWS: dict[int, "WorshipView"] = {}
+ACTIVE_VIEWS: dict[int, discord.ui.View] = {}
 
 
-def register_active_view(message_id: int, view: "WorshipView") -> None:
+def register_active_view(message_id: int, view: discord.ui.View) -> None:
     """Remember an active master request by its Discord message ID."""
     ACTIVE_VIEWS[message_id] = view
 
 
-def get_active_view(message_id: int) -> "WorshipView | None":
+def get_active_view(message_id: int) -> discord.ui.View | None:
     view = ACTIVE_VIEWS.get(message_id)
     if view is None:
         return None
@@ -153,6 +153,113 @@ class WorshipView(discord.ui.View):
         await self._reply_to_request(content)
 
 
+class ReleaseView(discord.ui.View):
+    def __init__(
+        self,
+        actor: discord.Member,
+        target: discord.Member,
+        store: Any,
+        guild_id: str,
+        timeout_seconds: int,
+    ):
+        super().__init__(timeout=timeout_seconds)
+        self.actor = actor
+        self.target = target
+        self.store = store
+        self.guild_id = guild_id
+        self.expires_at = time.monotonic() + timeout_seconds
+        self.message: discord.Message | None = None
+        self.resolved = False
+
+    async def _reply_to_request(self, content: str) -> None:
+        if self.message is None:
+            return
+        await self.message.reply(
+            content=content,
+            allowed_mentions=discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False,
+                replied_user=False,
+            ),
+        )
+
+    async def _resolve(self, button_number: int) -> str:
+        if time.monotonic() >= self.expires_at:
+            self.resolved = True
+            self.stop()
+            return "這個解除契約申請已經過期了。"
+
+        if button_number == 1:
+            removed = await asyncio.to_thread(
+                self.store.remove_master,
+                self.guild_id,
+                str(self.actor.id),
+                str(self.target.id),
+            )
+            if not removed:
+                removed = await asyncio.to_thread(
+                    self.store.remove_master,
+                    self.guild_id,
+                    str(self.target.id),
+                    str(self.actor.id),
+                )
+            content = (
+                f"{self.actor.mention} 與 {self.target.mention} 的主奴契約已解除。"
+                if removed
+                else "這段主奴契約已不存在，可能已經被解除。"
+            )
+        elif button_number == 2:
+            content = f"{self.target.mention} 拒絕了解除 {self.actor.mention} 的主奴契約申請。"
+        else:
+            raise ValueError("目前解除契約卡片只有第 1、2 顆按鈕")
+
+        self.resolved = True
+        self.stop()
+        return content
+
+    async def on_timeout(self) -> None:
+        if not self.resolved:
+            self.resolved = True
+            await self._reply_to_request("這個解除契約申請已經過期了。")
+
+    @discord.ui.button(label="同意解除", style=discord.ButtonStyle.success)
+    async def accept_button_callback(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message(
+                content="這不是你的解除契約申請喔😡",
+                ephemeral=True,
+            )
+            return
+        content = await self._resolve(1)
+        await interaction.response.defer()
+        await self._reply_to_request(content)
+
+    @discord.ui.button(label="拒絕解除", style=discord.ButtonStyle.danger)
+    async def reject_button_callback(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message(
+                content="這不是你的解除契約申請喔😡",
+                ephemeral=True,
+            )
+            return
+        content = await self._resolve(2)
+        await interaction.response.defer()
+        await self._reply_to_request(content)
+
+    async def admin_press(self, button_number: int) -> None:
+        content = await self._resolve(button_number)
+        await self._reply_to_request(content)
+
+
 def register_master(
     tree: Any,
     discord_module: Any,
@@ -225,12 +332,81 @@ def register_master(
         register_active_view(message.id, view)
 
 
+    @tree.command(name="release_master", description="申請解除與特定成員的主奴契約")
+    @app_commands.guild_only()
+    @app_commands.describe(
+        target="想解除主奴契約的成員",
+        timeout="申請有效時間（秒，預設 300 秒）",
+    )
+    async def release_master(
+        interaction: Any,
+        target: discord.Member,
+        timeout: int = 300,
+    ) -> None:
+        actor = interaction.user
+        guild_id = str(interaction.guild_id)
+
+        if actor.id == target.id:
+            await interaction.response.send_message("不能對自己申請解除契約😡", ephemeral=True)
+            return
+        if timeout < 1 or timeout > 86400:
+            await interaction.response.send_message(
+                "解除契約申請時間必須介於 1 到 86400 秒之間。",
+                ephemeral=True,
+            )
+            return
+
+        related = await asyncio.to_thread(
+            context.store.has_master_relationship,
+            guild_id,
+            str(actor.id),
+            str(target.id),
+        )
+        if not related:
+            related = await asyncio.to_thread(
+                context.store.has_master_relationship,
+                guild_id,
+                str(target.id),
+                str(actor.id),
+            )
+        if not related:
+            await interaction.response.send_message(
+                f"你和 {target.mention} 之間沒有主奴契約。",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord_module.Embed(
+            title="解除契約",
+            description=(
+                f"{actor.mention} 申請解除與 {target.mention} 的主奴契約。\n"
+                f"{target.mention} 要同意解除嗎？"
+            ),
+            color=EMBED_COLOR,
+        )
+        view = ReleaseView(actor, target, context.store, guild_id, timeout)
+        await interaction.response.send_message(
+            embed=embed,
+            view=view,
+            allowed_mentions=discord_module.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False,
+                replied_user=False,
+            ),
+        )
+        message = await interaction.original_response()
+        view.message = message
+        register_active_view(message.id, view)
+
+
 
 # check_master command
 
     @tree.command(name="check_master", description="查看自己目前的奴隸與主人")
     @app_commands.guild_only()
-    async def check_master(interaction: Any) -> None:
+    @app_commands.describe(public="是否公開訊息（預設是）")
+    async def check_master(interaction: Any, public: bool = True) -> None:
         guild_id = str(interaction.guild_id)
         actor_id = str(interaction.user.id)
         master_ids = await asyncio.to_thread(
@@ -244,20 +420,27 @@ def register_master(
             actor_id,
         )
 
-        slave_text = (
-            "、".join(f"<@{slave_id}>" for slave_id in slave_ids)
-            if slave_ids
-            else "你還沒有奴隸喔"
+        embed = discord_module.Embed(
+            title=f"{interaction.user.display_name} 的主奴關係",
+            color=EMBED_COLOR,
         )
-        master_text = (
-            "、".join(f"<@{master_id}>" for master_id in master_ids)
-            if master_ids
-            else "你還沒有主人喔"
-        )
-
+        if slave_ids:
+            embed.add_field(
+                name="奴隸",
+                value="、".join(f"<@{slave_id}>" for slave_id in slave_ids),
+                inline=False,
+            )
+        if master_ids:
+            embed.add_field(
+                name="主人",
+                value="、".join(f"<@{master_id}>" for master_id in master_ids),
+                inline=False,
+            )
+        if not slave_ids and not master_ids:
+            embed.description = "目前沒有主奴關係。"
         await interaction.response.send_message(
-            f"你的奴隸有\n{slave_text}\n-------------\n你的主人有\n{master_text}",
-            ephemeral=True,
+            embed=embed,
+            ephemeral=not public,
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
                 roles=False,
