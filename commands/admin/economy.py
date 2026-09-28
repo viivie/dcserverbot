@@ -17,6 +17,11 @@ CURRENCY_LABELS = {
     "crystals": "水晶",
     "grace": "神恩",
 }
+CURRENCY_EMOJIS_BY_STORAGE_KEY = {
+    "fumao_coins": CURRENCY_EMOJIS["FumaoCoin"],
+    "crystals": CURRENCY_EMOJIS["Crystal"],
+    "grace": CURRENCY_EMOJIS["grace"],
+}
 
 
 def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
@@ -41,7 +46,7 @@ def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
             ).astimezone(UTC_PLUS_8)
             currency = str(item["currency"])
             label = CURRENCY_LABELS.get(currency, currency)
-            emoji = CURRENCY_EMOJIS.get(currency, f":{currency}:")
+            emoji = CURRENCY_EMOJIS_BY_STORAGE_KEY.get(currency, "")
             amount = int(item["amount"])
             sign = "+" if amount > 0 else ""
             lines.append(
