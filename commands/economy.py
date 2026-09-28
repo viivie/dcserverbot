@@ -99,6 +99,17 @@ def _multiplier(value: float) -> str:
     return f"×{value:.2f}"
 
 
+def _checkin_separator(base_reward: int, reward: int, accumulated_hours: int | None = None) -> str:
+    labels = [
+        f"獲得 {base_reward:,} 芙帽幣",
+        f"合計 {reward:,} 芙帽幣",
+    ]
+    if accumulated_hours is not None:
+        labels.append(f"累積 {accumulated_hours} 小時獎勵 × {accumulated_hours}")
+    width = max(len(label) for label in labels) + 4
+    return "─" * max(18, min(40, width))
+
+
 def _currency_emoji(guild: discord.Guild | None, name: str) -> str:
     if name in CURRENCY_EMOJIS:
         return CURRENCY_EMOJIS[name]
@@ -134,7 +145,11 @@ def _upgrade_embed(
     target = next_level(account)
     coin = _currency_emoji(guild, "FumaoCoin")
     crystal = _currency_emoji(guild, "Crystal")
-    title = f"{'⚠️ 確認升級' if confirm else '🛒'} 至 Lv.{target.level}" if target else "已達最高等級"
+    title = (
+        f"{'⚠️ 確認升級至' if confirm else '🛒 升級至'} Lv.{target.level}"
+        if target
+        else "已達最高等級"
+    )
 
     embed = discord_module.Embed(title=title, color=EMBED_COLOR)
     if target is None:
@@ -142,21 +157,32 @@ def _upgrade_embed(
         return embed
 
     embed.add_field(
-        name="目前等級　　　　　　　目標等級",
-        value=f"Lv.{current.level}　　　　　　　　　Lv.{target.level}",
-        inline=False,
+        name="目前等級",
+        value=f"Lv.{current.level}",
+        inline=True,
     )
     embed.add_field(
-        name="升級費用　　　　　　　目前餘額",
+        name="目標等級",
+        value=f"Lv.{target.level}",
+        inline=True,
+    )
+    embed.add_field(
+        name="升級費用",
         value=(
-            f"{coin} 芙帽幣：**{_number(target.coin_cost)}**　　"
+            f"{coin} 芙帽幣：**{_number(target.coin_cost)}**\n"
+            f"{crystal} 水晶：**{_number(target.crystal_cost)}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="目前餘額",
+        value=(
             f"{coin} 芙帽幣：**{_number(account['fumao_coins'])}** "
             f"{'✅' if account['fumao_coins'] >= target.coin_cost else '❌'}\n"
-            f"{crystal} 水晶：**{_number(target.crystal_cost)}**　　"
             f"{crystal} 水晶：**{_number(account['crystals'])}** "
             f"{'✅' if account['crystals'] >= target.crystal_cost else '❌'}"
         ),
-        inline=False,
+        inline=True,
     )
     embed.add_field(
         name="升級後效益",
@@ -207,11 +233,13 @@ def _checkin_embed(
         accumulated = int(account["accumulated_hours"])
         lines.append(f"累積 {accumulated} 小時獎勵　　　× {accumulated}")
         lines.append(f"每小時倍率　　　　　　{_multiplier(multiplier)}")
+        separator = _checkin_separator(base_reward, reward, accumulated)
     else:
         lines.append(f"每日倍率　　　　　　　{_multiplier(multiplier)}")
+        separator = _checkin_separator(base_reward, reward)
     lines.extend(
         [
-            "────────────────────────",
+            separator,
             f"合計　　　　　　　　　**{_number(reward)}** {coin} 芙帽幣",
             "",
             _balance_line(account, guild),
