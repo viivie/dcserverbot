@@ -141,6 +141,10 @@ async def _send_interaction_response_with_retry(
         except discord.InteractionResponded:
             await interaction.followup.send(**kwargs)
             return
+        except discord.NotFound as error:
+            if getattr(error, "code", None) == 10062:
+                return
+            raise
         except discord.DiscordServerError as error:
             if error.status != 503 or attempt == 2:
                 raise
@@ -681,6 +685,13 @@ def register_economy(
     @economy.command(name="搶芙帽教聖殿", description="嘗試搶劫芙帽教聖殿")
     @app_commands.guild_only()
     async def rob_fumao_temple(interaction: Any) -> None:
+        try:
+            await interaction.response.defer()
+        except discord.NotFound as error:
+            if getattr(error, "code", None) == 10062:
+                return
+            raise
+
         now_monotonic = time.monotonic()
         cooldown_until = CURRENCY_COOLDOWNS.get(interaction.user.id, 0.0)
         if cooldown_until > now_monotonic:
