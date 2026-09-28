@@ -265,6 +265,8 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
         self.start_immediately = start_immediately
         template = get_bet_template(template_id) if template_id is not None else None
         if template is not None:
+            if template_id == 1:
+                self.duration.default = "5m"
             self.title_input.default = template["name"]
             self.content_input.default = template["content"]
             self.options_input.default = ",".join(

@@ -709,6 +709,20 @@ class WorshipStore:
                 "options": [(str(row[0]), float(row[1])) for row in options],
             }
 
+    def latest_bet_message_id(self, channel_id: str) -> str | None:
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                """
+                SELECT message_id
+                FROM bets
+                WHERE channel_id = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (str(channel_id),),
+            ).fetchone()
+            return str(bet[0]) if bet is not None else None
+
     def start_bet(self, message_id: str, now_ms: int) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
             bet = connection.execute(
