@@ -34,6 +34,7 @@ CURRENCY_EMOJIS = {
     "grace": "<:grace:1554060937244180542>",
 }
 CHECKIN_TITLE_EMOJI = "<:mura_excited:1429257164811407571>"
+CHECKIN_CARD_LINE = "─" * 42
 ROBBERY_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "economy"
 
 
@@ -280,10 +281,13 @@ def _checkin_sections(
         f"簽到等級：Lv.{account['level']}"
     )
     return [
-        f"## {CHECKIN_TITLE_EMOJI} **{'每小時' if kind == 'hourly' else '每日'}簽到成功**",
+        (
+            f"## {CHECKIN_TITLE_EMOJI} **{'每小時' if kind == 'hourly' else '每日'}簽到成功**\n"
+            f"{CHECKIN_CARD_LINE}"
+        ),
         f"獲得 **{_number(reward)}** {coin} 柚子幣\n\n" + "\n".join(calculation_lines),
-        f"合計　　　　　　　**{_number(reward)}** {coin} 柚子幣",
-        f"{balance}\n\nUTC+8",
+        f"{CHECKIN_CARD_LINE}\n合計　　　　　　　**{_number(reward)}** {coin} 柚子幣",
+        f"{CHECKIN_CARD_LINE}\n{balance}\n\nUTC+8",
     ]
 
 
@@ -368,7 +372,7 @@ def _quick_checkin_sections(
         else "本次沒有新的柚子幣獎勵\n"
     )
     return [
-        "## ⚡ **快速簽到**",
+        f"## ⚡ **快速簽到**\n{CHECKIN_CARD_LINE}",
         f"### {daily_name}\n{daily_value}",
         f"### {hourly_name}\n{hourly_value}",
         (
