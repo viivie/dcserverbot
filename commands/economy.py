@@ -8,6 +8,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import discord
@@ -20,11 +21,13 @@ TAIPEI = timezone(timedelta(hours=8), name="UTC+8")
 EMBED_COLOR = 0xE7A0B4
 BASE_REWARD_MIN = 100
 BASE_REWARD_MAX = 200
+DAILY_BASE_REWARD = 1_000
 CURRENCY_EMOJIS = {
     "FumaoCoin": "<:FumaoCoin:1554060935725973554>",
     "Crystal": "<:Crystal:1554060934140403815>",
     "grace": "<:grace:1554060937244180542>",
 }
+ROBBERY_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "economy"
 
 
 @dataclass(frozen=True)
@@ -151,6 +154,51 @@ def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
     )
 
 
+def _robbery_embed(
+    discord_module: Any,
+    guild: discord.Guild | None,
+    account: dict[str, Any],
+    amount: int,
+    success: bool,
+) -> tuple[Any, discord.File | None]:
+    coin = _currency_emoji(guild, "FumaoCoin")
+    if success:
+        title = "🎉 搶劫成功！"
+        description = (
+            "幸運的，芙帽剛好不在神殿🎉🎉\n"
+            "你們成功進入了芙帽教的地下金庫\n"
+            f"並偷取到了`{amount:,}` {coin} 芙帽幣"
+        )
+        asset_name = "robbery_success.jpg"
+        color = 0x2ECC71
+    else:
+        title = "⚡ 搶劫失敗！"
+        description = (
+            "噢不，芙帽降臨了神殿......\n"
+            "並發現了你們搶劫的罪刑QQ\n"
+            "偉大的芙帽降下了神罰⚡⚡⚡\n\n"
+            f"您失去了`{amount:,}` {coin} 芙帽幣"
+        )
+        asset_name = "robbery_failure.png"
+        color = 0xE74C3C
+
+    embed = discord_module.Embed(title=title, description=description, color=color)
+    embed.add_field(
+        name="目前餘額",
+        value=(
+            f"{_number(account['fumao_coins'])} {coin} 芙帽幣．"
+            f"今天 {_period_time(datetime.now(TAIPEI))}"
+        ),
+        inline=False,
+    )
+    asset_path = ROBBERY_ASSET_DIR / asset_name
+    if not asset_path.is_file():
+        return embed, None
+    file = discord.File(asset_path, filename=asset_name)
+    embed.set_image(url=f"attachment://{asset_name}")
+    return embed, file
+
+
 def _upgrade_embed(
     discord_module: Any,
     account: dict[str, Any],
@@ -245,6 +293,7 @@ def _checkin_embed(
     base_reward = int(account["base_reward"])
     reward = int(account["reward"])
     multiplier = float(account["multiplier"])
+    random_multiplier = float(account.get("random_multiplier", 1.0))
     lines = [f"獲得 **{_number(base_reward)}** {coin} 芙帽幣", ""]
     if kind == "hourly":
         accumulated = int(account["accumulated_hours"])
@@ -253,7 +302,10 @@ def _checkin_embed(
             ("每小時倍率", _multiplier(multiplier)),
         ]
     else:
-        calculation_rows = [("每日倍率", _multiplier(multiplier))]
+        calculation_rows = [
+            ("每日隨機倍率", _multiplier(random_multiplier)),
+            ("等級每日倍率", _multiplier(multiplier)),
+        ]
     lines.extend(
         [
             _checkin_calculation_block(calculation_rows),
@@ -394,8 +446,6 @@ def _attach_upgrade_view(
     embed: Any,
     account: dict[str, Any],
 ) -> UpgradeView | None:
-    if next_level(account) is None:
-        return None
     return UpgradeView(context, interaction.user.id, interaction.guild, embed)
 
 
@@ -416,17 +466,22 @@ def register_economy(
             context.store.economy_account,
             str(interaction.user.id),
         )
-        base_reward = random.randint(BASE_REWARD_MIN, BASE_REWARD_MAX)
+        base_reward = DAILY_BASE_REWARD
+        random_multiplier = random.randint(100, 200) / 100
         account = await asyncio.to_thread(
             context.store.claim_daily,
             str(interaction.user.id),
             now.date().isoformat(),
             base_reward,
             level_data(account_before["level"]).daily_multiplier,
+            random_multiplier,
         )
         embed = _checkin_embed(discord_module, interaction.user, interaction.guild, account, "daily")
         view = _attach_upgrade_view(context, interaction, embed, account)
-        await interaction.response.send_message(embed=embed, view=view)
+        if view is None:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
 
     @economy.command(name="每小時簽到", description="每小時簽到並獲得芙帽幣")
     @app_commands.guild_only()
@@ -446,7 +501,53 @@ def register_economy(
         )
         embed = _checkin_embed(discord_module, interaction.user, interaction.guild, account, "hourly")
         view = _attach_upgrade_view(context, interaction, embed, account)
-        await interaction.response.send_message(embed=embed, view=view)
+        if view is None:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
+
+    @economy.command(name="搶芙帽教聖殿", description="嘗試搶劫芙帽教聖殿，成功率 10%")
+    @app_commands.guild_only()
+    async def rob_fumao_temple(interaction: Any) -> None:
+        current_account = await asyncio.to_thread(
+            context.store.economy_account,
+            str(interaction.user.id),
+        )
+        if current_account["fumao_coins"] < 500:
+            await interaction.response.send_message(
+                "芙帽教的守衛拒絕讓你進入，你嘗試賄賂守衛，但你太窮了沒錢賄賂，"
+                "於是還沒搶劫就被趕出聖殿大門外了QQ"
+            )
+            return
+
+        success = random.random() < 0.10
+        requested_amount = (
+            random.randint(1_000, 10_000)
+            if success
+            else random.randint(100, 500)
+        )
+        account = await asyncio.to_thread(
+            context.store.change_economy_currency,
+            str(interaction.user.id),
+            "fumao_coins",
+            requested_amount if success else -requested_amount,
+        )
+        amount = (
+            int(account["changed"])
+            if success
+            else abs(int(account["changed"]))
+        )
+        embed, file = _robbery_embed(
+            discord_module,
+            interaction.guild,
+            account,
+            amount,
+            success,
+        )
+        if file is None:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed, file=file)
 
     @economy.command(name="餘額", description="查看芙帽幣、水晶與神恩餘額")
     @app_commands.guild_only()

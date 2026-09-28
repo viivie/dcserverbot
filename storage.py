@@ -222,6 +222,7 @@ class WorshipStore:
         day: str,
         base_reward: int,
         multiplier: float,
+        random_multiplier: float = 1.0,
     ) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
             account = self._select_economy_account(connection, str(user_id))
@@ -230,7 +231,7 @@ class WorshipStore:
                 account["reward"] = 0
                 return account
 
-            reward = int(round(base_reward * multiplier))
+            reward = int(round(base_reward * random_multiplier * multiplier))
             connection.execute(
                 """
                 UPDATE economy_accounts
@@ -243,6 +244,7 @@ class WorshipStore:
             account["claimed"] = True
             account["reward"] = reward
             account["base_reward"] = base_reward
+            account["random_multiplier"] = random_multiplier
             account["multiplier"] = multiplier
             return account
 
@@ -346,6 +348,25 @@ class WorshipStore:
                 (int(amount), str(user_id)),
             )
             return self._select_economy_account(connection, str(user_id))
+
+    def change_economy_currency(self, user_id: str, currency: str, amount: int) -> dict[str, Any]:
+        """Apply a currency delta without allowing the wallet to go negative."""
+        if currency != "fumao_coins":
+            raise ValueError("目前只有芙帽幣支援增減操作")
+
+        with self.lock, self._connect() as connection:
+            account = self._select_economy_account(connection, str(user_id))
+            requested = int(amount)
+            actual = requested
+            if requested < 0:
+                actual = -min(account["fumao_coins"], abs(requested))
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
+                (actual, str(user_id)),
+            )
+            account = self._select_economy_account(connection, str(user_id))
+            account["changed"] = actual
+            return account
 
     def add_master(self, guild_id: str, actor_id: str, master_id: str) -> bool:
         """Record one accepted master relationship.
