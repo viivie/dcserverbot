@@ -119,3 +119,34 @@ class DeleteConfirmView(discord.ui.View):
                     pass
             return deleted_count
         return len(messages)
+
+    async def admin_press(self, button_number: int) -> None:
+        """Run a delete-card button through the trusted admin command."""
+        if self.resolved:
+            raise ValueError("這個刪除請求已經處理過了。")
+        if button_number == 1:
+            deleted_count = await self._delete_recent_messages()
+            embed = discord.Embed(
+                title="✅ 訊息刪除完成",
+                description=(
+                    f"頻道：{getattr(self.channel, 'mention', self.channel)}\n"
+                    f"已刪除 **{deleted_count}** 則訊息。"
+                ),
+                color=0x2ECC71,
+            )
+        elif button_number == 2:
+            embed = discord.Embed(
+                title="已取消刪除",
+                description=f"頻道：{getattr(self.channel, 'mention', self.channel)}",
+                color=0x95A5A6,
+            )
+        else:
+            raise ValueError("目前刪除確認卡片只有第 1、2 顆按鈕")
+
+        self.resolved = True
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=embed, view=None)
+            except discord.NotFound:
+                pass
+        self.stop()

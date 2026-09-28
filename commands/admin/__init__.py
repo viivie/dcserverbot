@@ -9,7 +9,7 @@ from typing import Any
 
 import discord
 
-from commands.master import get_active_view
+from commands.master import get_active_view, register_active_view
 from .cleanup import DeleteConfirmView
 from .roles import GiveRoleConfirmView
 from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
@@ -21,6 +21,7 @@ ID_PATTERN = re.compile(r"^\d{17,20}$")
 USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
+GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
 PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "id", "response"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
@@ -31,7 +32,10 @@ COMMAND_INFO = {
     "button": ("替指定認主訊息執行按鈕操作。", "&button 訊息ID 按鈕編號"),
     "react": ("讓機器人對指定訊息加上一個或多個反應。", "&react 訊息ID 表情 [表情...]"),
     "delete": ("刪除目前頻道最近的指定數量訊息。", "&delete 數量（最多 100）"),
-    "give": ("要求使用者確認是否接受指定身分組。", "&give 身分組ID 人ID [備註]"),
+    "give": (
+        "給予一個或多個身分組；一般模式需要對方同意，force 模式直接給予。",
+        "&give 身分組ID[,身分組ID...] 人ID [備註]（強制：&give force 身分組ID[,身分組ID...] 人ID [備註]）",
+    ),
     "id": ("取得被提及的使用者或身分組 ID。", "&id @使用者或 @身分組"),
     "response": ("回覆目前頻道中的指定訊息。", "&response 訊息ID 回覆內容"),
     "sql": ("查詢或操作機器人的 SQLite 資料庫（原始管理員限定，預設私訊回傳）。", "&sql SQL語法（公開：&^sql SQL語法）"),
@@ -105,6 +109,56 @@ def _has_permission(store: Any, user_id: str, command: str) -> bool:
     if command in OWNER_ONLY_COMMANDS:
         return False
     return store.has_prefix_command(user_id, command)
+
+
+def _parse_give_arguments(
+    arguments: str,
+) -> tuple[bool, list[str], str, str] | None:
+    """Parse role IDs, member ID, optional note, and the force flag.
+
+    The member ID is the last ID in the initial ID sequence, which allows both
+    ``role member`` and ``role1 role2 member`` forms. Comma-separated roles are
+    also supported with ``role1,role2 member``.
+    """
+    values = arguments.split()
+    if values and values[0].lower() in GIVE_FORCE_WORDS:
+        force = True
+        values.pop(0)
+    else:
+        force = False
+
+    if len(values) < 2:
+        return None
+
+    if any(separator in values[0] for separator in (",", "+", ";")):
+        role_ids = [
+            role_id
+            for role_id in re.split(r"[,;+]", values[0])
+            if role_id
+        ]
+        if (
+            not role_ids
+            or any(not ID_PATTERN.fullmatch(role_id) for role_id in role_ids)
+            or not ID_PATTERN.fullmatch(values[1])
+        ):
+            return None
+        return force, list(dict.fromkeys(role_ids)), values[1], " ".join(values[2:])[:1000]
+
+    leading_ids = []
+    for value in values:
+        if not ID_PATTERN.fullmatch(value):
+            break
+        leading_ids.append(value)
+
+    if len(leading_ids) < 2:
+        return None
+    note = " ".join(values[len(leading_ids):])[:1000]
+    return (
+        force,
+        list(dict.fromkeys(leading_ids[:-1])),
+        leading_ids[-1],
+        note,
+    )
 
 
 async def _send_sql_message(
@@ -278,6 +332,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             view.message = confirmation
+            register_active_view(confirmation.id, view)
             return True
 
         if command == "button":
@@ -353,40 +408,45 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             view.message = confirmation
+            register_active_view(confirmation.id, view)
             return True
 
         if command == "give":
-            values = arguments.split(maxsplit=2)
-            if (
-                len(values) < 2
-                or not ID_PATTERN.fullmatch(values[0])
-                or not ID_PATTERN.fullmatch(values[1])
-            ):
-                await message.channel.send("用法：&give 身分組ID 人ID [備註]")
+            parsed_give = _parse_give_arguments(arguments)
+            if parsed_give is None:
+                await message.channel.send(
+                    "用法：&give 身分組ID[,身分組ID...] 人ID [備註]"
+                )
                 return True
 
-            role_id = int(values[0])
-            member_id = int(values[1])
-            note = values[2].strip()[:1000] if len(values) == 3 else ""
+            force, role_ids, member_id, note = parsed_give
+            if force and not is_owner:
+                await message.author.send("強制給予只能由原始管理員使用。")
+                return True
             if message.guild is None:
                 await message.channel.send("這個指令只能在伺服器頻道使用。")
                 return True
 
-            role = message.guild.get_role(role_id)
-            if role is None:
-                await message.channel.send("找不到指定的身分組。")
-                return True
-            if role.is_default() or role.managed:
-                await message.channel.send("這個身分組不能由機器人給予。")
-                return True
-            if message.guild.me is not None and role >= message.guild.me.top_role:
-                await message.channel.send("這個身分組的階級高於或等於機器人，無法給予。")
-                return True
+            roles = []
+            for role_id in role_ids:
+                role = message.guild.get_role(int(role_id))
+                if role is None:
+                    await message.channel.send(f"找不到身分組 `{role_id}`。")
+                    return True
+                if role.is_default() or role.managed:
+                    await message.channel.send(f"身分組 `{role_id}` 不能由機器人給予。")
+                    return True
+                if message.guild.me is not None and role >= message.guild.me.top_role:
+                    await message.channel.send(
+                        f"身分組 {role.mention} 的階級高於或等於機器人，無法給予。"
+                    )
+                    return True
+                roles.append(role)
 
-            member = message.guild.get_member(member_id)
+            member = message.guild.get_member(int(member_id))
             if member is None:
                 try:
-                    member = await message.guild.fetch_member(member_id)
+                    member = await message.guild.fetch_member(int(member_id))
                 except discord.NotFound:
                     await message.channel.send("找不到指定的使用者。")
                     return True
@@ -399,16 +459,59 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 quoted_note = "\n".join(f"> {line}" for line in note.splitlines())
                 description += f"{quoted_note}\n\n"
             description += (
-                f"你被授予了 {role.mention}\n"
-                "你是否接受這個身分組？"
+                f"你被授予了 {'、'.join(role.mention for role in roles)}\n"
+                "你是否接受這些身分組？"
             )
+
+            if force:
+                try:
+                    await member.add_roles(
+                        *roles,
+                        reason="Admin force-granted role(s)",
+                    )
+                except discord.Forbidden:
+                    embed = discord.Embed(
+                        title="❌ 身分組強制給予失敗",
+                        description="機器人沒有管理這些身分組的權限，或身分組階級高於機器人。",
+                        color=0xE74C3C,
+                    )
+                except discord.HTTPException:
+                    embed = discord.Embed(
+                        title="❌ 身分組強制給予失敗",
+                        description="Discord API 暫時無法完成這次操作。",
+                        color=0xE74C3C,
+                    )
+                else:
+                    result_description = (
+                        f"已將 {'、'.join(role.mention for role in roles)} 給予 "
+                        f"{member.mention}，不需要對方同意。"
+                    )
+                    if note:
+                        quoted_note = "\n".join(f"> {line}" for line in note.splitlines())
+                        result_description = f"{quoted_note}\n\n{result_description}"
+                    embed = discord.Embed(
+                        title="✅ 已強制給予身分組",
+                        description=result_description,
+                        color=0x2ECC71,
+                    )
+                await message.channel.send(
+                    content=member.mention,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True,
+                        roles=True,
+                        everyone=False,
+                        replied_user=False,
+                    ),
+                )
+                return True
 
             embed = discord.Embed(
                 title="🎁 身分組給予確認",
                 description=description,
                 color=0xE7A0B4,
             )
-            view = GiveRoleConfirmView(member, role)
+            view = GiveRoleConfirmView(member, roles)
             confirmation = await message.channel.send(
                 content=member.mention,
                 embed=embed,
@@ -421,6 +524,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 ),
             )
             view.message = confirmation
+            register_active_view(confirmation.id, view)
             return True
 
         if command == "snipe":

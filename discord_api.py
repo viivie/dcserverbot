@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from config import ID_RE, TARGET_USER_ID, TARGET_USERNAME, Config
-from storage import WorshipStore
+from config import TARGET_USER_ID, Config
 
 LOGGER = logging.getLogger("fumao-worship-bot")
-CACHE_MS = 60 * 60 * 1000
 
 
 def read_user(value: Any) -> dict[str, Any] | None:
@@ -40,9 +36,8 @@ def member_avatar_url(guild_id: str, user: dict[str, Any], guild_avatar: str | N
 
 
 class DiscordApi:
-    def __init__(self, config: Config, store: WorshipStore):
+    def __init__(self, config: Config, store: Any | None = None):
         self.config = config
-        self.store = store
 
     def get(self, path: str) -> tuple[bool, int, Any]:
         if not self.config.bot_token:
@@ -61,41 +56,19 @@ class DiscordApi:
             return False, 0, None
 
     def resolve_target(self, guild_id: str | None) -> tuple[str | None, str | None]:
-        override = TARGET_USER_ID if ID_RE.fullmatch(TARGET_USER_ID) else None
         if not guild_id or not self.config.bot_token:
-            return override, None
-        now_ms = int(time.time() * 1000)
-        cached = self.store.read_target(guild_id)
-        if cached and now_ms - int(cached["refreshedAt"]) < CACHE_MS:
-            return cached["userId"], cached["avatarUrl"]
+            return TARGET_USER_ID, None
 
-        def remember(user_id: str, avatar_url: str) -> tuple[str, str]:
-            self.store.save_target(guild_id, user_id, avatar_url, now_ms)
-            return user_id, avatar_url
+        ok, _, body = self.get(f"/guilds/{guild_id}/members/{TARGET_USER_ID}")
+        if ok and isinstance(body, dict):
+            user = read_user(body.get("user"))
+            if user:
+                return TARGET_USER_ID, member_avatar_url(guild_id, user, body.get("avatar"))
 
-        if override or cached:
-            user_id = override or cached["userId"]
-            ok, _, body = self.get(f"/guilds/{guild_id}/members/{user_id}")
-            if ok and isinstance(body, dict):
-                user = read_user(body.get("user"))
-                if user:
-                    return remember(user["id"], member_avatar_url(guild_id, user, body.get("avatar")))
-            ok, _, body = self.get(f"/users/{user_id}")
-            if ok:
-                user = read_user(body)
-                if user:
-                    return remember(user["id"], user_avatar_url(user))
+        ok, _, body = self.get(f"/users/{TARGET_USER_ID}")
+        if ok:
+            user = read_user(body)
+            if user:
+                return TARGET_USER_ID, user_avatar_url(user)
 
-        if not override:
-            query = urlencode({"query": TARGET_USERNAME, "limit": 10})
-            ok, status, body = self.get(f"/guilds/{guild_id}/members/search?{query}")
-            if ok and isinstance(body, list):
-                wanted = TARGET_USERNAME.lower()
-                for item in body:
-                    user = read_user(item.get("user")) if isinstance(item, dict) else None
-                    if user and user["username"].lower() == wanted:
-                        return remember(user["id"], member_avatar_url(guild_id, user, item.get("avatar")))
-            elif status:
-                LOGGER.warning("Discord member search failed: %s", status)
-
-        return (cached["userId"], cached["avatarUrl"]) if cached else (override, None)
+        return TARGET_USER_ID, None

@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
 BOT_DIR = Path(__file__).resolve().parent
 ROOT = BOT_DIR.parent
-TARGET_USERNAME = "ariel970927"
 TARGET_USER_ID = "1146045542082809866"
-ID_RE = re.compile(r"^\d{17,20}$")
 
 
 def load_dotenv(path: Path) -> None:

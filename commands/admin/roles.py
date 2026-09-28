@@ -6,12 +6,41 @@ import discord
 
 
 class GiveRoleConfirmView(discord.ui.View):
-    def __init__(self, recipient: discord.Member, role: discord.Role) -> None:
+    def __init__(
+        self,
+        recipient: discord.Member,
+        roles: list[discord.Role] | tuple[discord.Role, ...],
+    ) -> None:
         super().__init__(timeout=None)
         self.recipient = recipient
-        self.role = role
+        self.roles = tuple(roles)
         self.message: discord.Message | None = None
         self.resolved = False
+
+    @property
+    def role_mentions(self) -> str:
+        return "、".join(role.mention for role in self.roles)
+
+    async def _grant_roles(self, reason: str) -> discord.Embed:
+        try:
+            await self.recipient.add_roles(*self.roles, reason=reason)
+        except discord.Forbidden:
+            return discord.Embed(
+                title="❌ 身分組給予失敗",
+                description="機器人沒有管理這些身分組的權限，或身分組階級高於機器人。",
+                color=0xE74C3C,
+            )
+        except discord.HTTPException:
+            return discord.Embed(
+                title="❌ 身分組給予失敗",
+                description="Discord API 暫時無法完成這次操作。",
+                color=0xE74C3C,
+            )
+        return discord.Embed(
+            title="✅ 已接受身分組",
+            description=f"{self.recipient.mention} 已接受 {self.role_mentions}。",
+            color=0x2ECC71,
+        )
 
     async def _deny_other_user(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.recipient.id:
@@ -36,29 +65,7 @@ class GiveRoleConfirmView(discord.ui.View):
             await interaction.response.defer()
         except discord.NotFound:
             return
-        try:
-            await self.recipient.add_roles(
-                self.role,
-                reason="User accepted an admin role grant request",
-            )
-        except discord.Forbidden:
-            embed = discord.Embed(
-                title="❌ 身分組給予失敗",
-                description="機器人沒有管理這個身分組的權限，或身分組階級高於機器人。",
-                color=0xE74C3C,
-            )
-        except discord.HTTPException:
-            embed = discord.Embed(
-                title="❌ 身分組給予失敗",
-                description="Discord API 暫時無法完成這次操作。",
-                color=0xE74C3C,
-            )
-        else:
-            embed = discord.Embed(
-                title="✅ 已接受身分組",
-                description=f"{self.recipient.mention} 已接受 {self.role.mention}。",
-                color=0x2ECC71,
-            )
+        embed = await self._grant_roles("User accepted an admin role grant request")
 
         try:
             await interaction.edit_original_response(embed=embed, view=None)
@@ -81,8 +88,28 @@ class GiveRoleConfirmView(discord.ui.View):
         self.resolved = True
         embed = discord.Embed(
             title="已拒絕身分組",
-            description=f"{self.recipient.mention} 拒絕接受 {self.role.mention}。",
+            description=f"{self.recipient.mention} 拒絕接受 {self.role_mentions}。",
             color=0x95A5A6,
         )
         await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    async def admin_press(self, button_number: int) -> None:
+        """Allow the trusted admin command to operate this confirmation card."""
+        if self.resolved:
+            raise ValueError("這個身分組請求已經處理過了。")
+        if button_number == 1:
+            embed = await self._grant_roles("Admin confirmed a role grant request")
+        elif button_number == 2:
+            embed = discord.Embed(
+                title="已拒絕身分組",
+                description=f"{self.recipient.mention} 拒絕接受 {self.role_mentions}。",
+                color=0x95A5A6,
+            )
+        else:
+            raise ValueError("目前身分組給予卡片只有第 1、2 顆按鈕")
+
+        self.resolved = True
+        if self.message is not None:
+            await self.message.edit(embed=embed, view=None)
         self.stop()

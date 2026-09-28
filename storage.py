@@ -52,13 +52,6 @@ class WorshipStore:
                     last_date TEXT
                 );
 
-                CREATE TABLE IF NOT EXISTS targets (
-                    guild_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    avatar_url TEXT NOT NULL,
-                    refreshed_at INTEGER NOT NULL
-                );
-
                 CREATE TABLE IF NOT EXISTS prefix_command_permissions (
                     user_id TEXT NOT NULL,
                     command TEXT NOT NULL,
@@ -97,28 +90,18 @@ class WorshipStore:
                 connection.execute(
                     "ALTER TABLE deleted_messages ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0"
                 )
+            connection.execute("DROP TABLE IF EXISTS targets")
 
     def total(self) -> int:
         with self.lock, self._connect() as connection:
             row = connection.execute("SELECT value FROM metadata WHERE key = 'total'").fetchone()
             return int(row[0]) if row else 0
 
-    def latest_avatar(self) -> str | None:
-        with self.lock, self._connect() as connection:
-            row = connection.execute(
-                "SELECT avatar_url FROM targets ORDER BY refreshed_at DESC LIMIT 1"
-            ).fetchone()
-            return row[0] if row else None
-
     def board(self) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
             total_row = connection.execute("SELECT value FROM metadata WHERE key = 'total'").fetchone()
-            avatar_row = connection.execute(
-                "SELECT avatar_url FROM targets ORDER BY refreshed_at DESC LIMIT 1"
-            ).fetchone()
             return {
                 "total": int(total_row[0]) if total_row else 0,
-                "avatarUrl": avatar_row[0] if avatar_row else None,
             }
 
     def apply_worship(self, actor_id: str, display_name: str) -> dict[str, Any]:
@@ -151,29 +134,6 @@ class WorshipStore:
                 "streak": next_value,
                 "counted": counted,
             }
-
-    def read_target(self, guild_id: str) -> dict[str, Any] | None:
-        with self.lock, self._connect() as connection:
-            row = connection.execute(
-                "SELECT user_id, avatar_url, refreshed_at FROM targets WHERE guild_id = ?",
-                (guild_id,),
-            ).fetchone()
-            if not row:
-                return None
-            return {"userId": row[0], "avatarUrl": row[1], "refreshedAt": row[2]}
-
-    def save_target(self, guild_id: str, user_id: str, avatar_url: str, refreshed_at: int) -> None:
-        with self.lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO targets(guild_id, user_id, avatar_url, refreshed_at) VALUES (?, ?, ?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    avatar_url = excluded.avatar_url,
-                    refreshed_at = excluded.refreshed_at
-                """,
-                (guild_id, user_id, avatar_url, refreshed_at),
-            )
 
     def add_master(self, guild_id: str, actor_id: str, master_id: str) -> bool:
         """Record one accepted master relationship.

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -80,22 +79,6 @@ def register_worship(tree: Any, discord: Any, app_commands: Any, context: Comman
         target_id, avatar_url = await asyncio.to_thread(
             context.discord_api.resolve_target, str(interaction.guild_id)
         )
-        if target_id and interaction.guild:
-            try:
-                target_member = interaction.guild.get_member(int(target_id))
-                if target_member is None:
-                    target_member = await interaction.guild.fetch_member(int(target_id))
-                if target_member is not None:
-                    avatar_url = str(target_member.display_avatar.url)
-                    await asyncio.to_thread(
-                        context.store.save_target,
-                        str(interaction.guild.id),
-                        str(target_member.id),
-                        avatar_url,
-                        int(time.time() * 1000),
-                    )
-            except (discord.HTTPException, ValueError) as error:
-                LOGGER.warning("could not fetch target avatar: %s", error)
 
         mentions = [target_id, user_id] if target_id else [user_id]
         embed = discord.Embed(title=EMBED_TITLE, description=worship_line(display_name), color=EMBED_COLOR)

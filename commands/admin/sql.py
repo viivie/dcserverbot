@@ -92,6 +92,38 @@ class SqlConfirmView(discord.ui.View):
         except discord.HTTPException:
             pass
 
+    async def admin_press(self, button_number: int) -> None:
+        """Run a SQL confirmation-card button through the admin command."""
+        if self.resolved:
+            raise ValueError("這個資料庫操作已經處理過了。")
+        if button_number == 1:
+            self.resolved = True
+            try:
+                result = await asyncio.to_thread(self.store.execute_sql, self.statement)
+                embed = sql_result_embed(result)
+            except sqlite3.Error as error:
+                embed = discord.Embed(
+                    title="❌ SQL 執行失敗",
+                    description=str(error)[:4000],
+                    color=0xE74C3C,
+                )
+        elif button_number == 2:
+            self.resolved = True
+            embed = discord.Embed(
+                title="已取消資料庫操作",
+                description="沒有執行 SQL。",
+                color=0x95A5A6,
+            )
+        else:
+            raise ValueError("目前資料庫操作卡片只有第 1、2 顆按鈕")
+
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=embed, view=None)
+            except discord.NotFound:
+                pass
+        self.stop()
+
 
 def is_read_only_sql(statement: str) -> bool:
     keyword = re.match(r"\s*([A-Za-z]+)", statement)
