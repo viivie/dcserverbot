@@ -35,6 +35,10 @@ class DeleteConfirmView(discord.ui.View):
             return
 
         self.resolved = True
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
         deleted_count = await self._delete_recent_messages()
         embed = discord.Embed(
             title="✅ 訊息刪除完成",
@@ -44,7 +48,10 @@ class DeleteConfirmView(discord.ui.View):
             ),
             color=0x2ECC71,
         )
-        await interaction.response.edit_message(embed=embed, view=None)
+        try:
+            await interaction.edit_original_response(embed=embed, view=None)
+        except discord.NotFound:
+            pass
         self.stop()
 
     @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)

@@ -39,6 +39,10 @@ class SqlConfirmView(discord.ui.View):
 
         self.resolved = True
         try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
+        try:
             result = await asyncio.to_thread(self.store.execute_sql, self.statement)
             embed = sql_result_embed(result)
         except sqlite3.Error as error:
@@ -47,7 +51,10 @@ class SqlConfirmView(discord.ui.View):
                 description=str(error)[:4000],
                 color=0xE74C3C,
             )
-        await interaction.response.edit_message(embed=embed, view=None)
+        try:
+            await interaction.edit_original_response(embed=embed, view=None)
+        except discord.NotFound:
+            pass
         self.stop()
 
     @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)

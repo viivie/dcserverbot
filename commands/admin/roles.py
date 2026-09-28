@@ -33,6 +33,10 @@ class GiveRoleConfirmView(discord.ui.View):
 
         self.resolved = True
         try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
+        try:
             await self.recipient.add_roles(
                 self.role,
                 reason="User accepted an admin role grant request",
@@ -56,7 +60,10 @@ class GiveRoleConfirmView(discord.ui.View):
                 color=0x2ECC71,
             )
 
-        await interaction.response.edit_message(embed=embed, view=None)
+        try:
+            await interaction.edit_original_response(embed=embed, view=None)
+        except discord.NotFound:
+            pass
         self.stop()
 
     @discord.ui.button(label="拒絕", style=discord.ButtonStyle.danger)
