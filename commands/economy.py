@@ -295,7 +295,6 @@ def _checkin_embed(
     base_reward = int(account["base_reward"])
     reward = int(account["reward"])
     multiplier = float(account["multiplier"])
-    random_multiplier = float(account.get("random_multiplier", 1.0))
     lines = [f"獲得 **{_number(base_reward)}** {coin} 芙帽幣", ""]
     if kind == "hourly":
         accumulated = int(account["accumulated_hours"])
@@ -304,10 +303,7 @@ def _checkin_embed(
             ("每小時倍率", _multiplier(multiplier)),
         ]
     else:
-        calculation_rows = [
-            ("每日隨機倍率", _multiplier(random_multiplier)),
-            ("等級每日倍率", _multiplier(multiplier)),
-        ]
+        calculation_rows = [("每日倍率", _multiplier(multiplier))]
     lines.extend(
         [
             _checkin_calculation_block(calculation_rows),
