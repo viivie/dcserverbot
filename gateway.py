@@ -98,8 +98,10 @@ def run_gateway(config: Config) -> None:
 
     @client.event
     async def on_message(message) -> None:
+        from commands.economy import handle_quick_checkin
         from commands.admin import handle_admin_message
 
+        await handle_quick_checkin(message, context)
         await handle_admin_message(message, store)
 
     client.run(config.bot_token)

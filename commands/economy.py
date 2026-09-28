@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +21,8 @@ EMBED_COLOR = 0xE7A0B4
 BASE_REWARD_MIN = 100
 BASE_REWARD_MAX = 200
 DAILY_BASE_REWARD = 1_000
+QUICK_CHECKIN_GUILD_ID = 1512762043504267284
+QUICK_CHECKIN_CHANNEL_ID = 1554087496898453514
 ROBBERY_COOLDOWN_SECONDS = 1.0
 CURRENCY_COOLDOWNS: dict[int, float] = {}
 CURRENCY_EMOJIS = {
@@ -105,33 +106,6 @@ def _multiplier(value: float) -> str:
     return f"×{value:.2f}"
 
 
-def _display_width(value: str) -> int:
-    return sum(
-        2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
-        for character in value
-    )
-
-
-def _checkin_calculation_block(rows: list[tuple[str, str]]) -> str:
-    label_width = max(_display_width(label) for label, _ in rows)
-    value_width = max(_display_width(value) for _, value in rows)
-    width = max(22, min(40, label_width + value_width + 1))
-    formatted_rows = []
-    for label, value in rows:
-        label_padding = " " * (label_width - _display_width(label))
-        value_padding = " " * (value_width - _display_width(value))
-        middle_padding = " " * (width - label_width - value_width - 1)
-        formatted_rows.append(
-            f"{label}{label_padding}{middle_padding}{value_padding}{value}"
-        )
-    return "```text\n" + "\n".join(
-        [
-            *formatted_rows,
-            "─" * width,
-        ]
-    ) + "\n```"
-
-
 def _currency_emoji(guild: discord.Guild | None, name: str) -> str:
     if name in CURRENCY_EMOJIS:
         return CURRENCY_EMOJIS[name]
@@ -154,6 +128,12 @@ def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
         f"簽到等級：Lv.{account['level']}"
     )
+
+
+def _set_user_thumbnail(embed: Any, user: Any) -> None:
+    avatar = getattr(getattr(user, "display_avatar", None), "url", None)
+    if avatar:
+        embed.set_thumbnail(url=str(avatar))
 
 
 def _robbery_embed(
@@ -275,7 +255,6 @@ def _checkin_embed(
     kind: str,
 ) -> Any:
     coin = _currency_emoji(guild, "FumaoCoin")
-    level = level_data(account["level"])
     if not account.get("claimed"):
         if kind == "daily":
             description = "今天已經完成每日簽到，明天再來吧。"
@@ -290,35 +269,183 @@ def _checkin_embed(
             description=f"{user.mention}\n{description}\n\n{_balance_line(account, guild)}",
             color=0x95A5A6,
         )
+        _set_user_thumbnail(embed, user)
         return embed
 
     base_reward = int(account["base_reward"])
     reward = int(account["reward"])
     multiplier = float(account["multiplier"])
-    lines = [f"獲得 **{_number(base_reward)}** {coin} 芙帽幣", ""]
-    if kind == "hourly":
-        accumulated = int(account["accumulated_hours"])
-        calculation_rows = [
-            (f"累積 {accumulated} 小時獎勵", f"× {accumulated}"),
-            ("每小時倍率", _multiplier(multiplier)),
-        ]
-    else:
-        calculation_rows = [("每日倍率", _multiplier(multiplier))]
-    lines.extend(
-        [
-            _checkin_calculation_block(calculation_rows),
-            f"合計　　　　　　　　　**{_number(reward)}** {coin} 芙帽幣",
-            "",
-            _balance_line(account, guild),
-        ]
-    )
     embed = discord_module.Embed(
         title=f"✅ {'每小時' if kind == 'hourly' else '每日'}簽到成功",
-        description=f"{user.mention}\n" + "\n".join(lines),
+        description=(
+            f"{user.mention}\n"
+            f"獲得 **{_number(base_reward)}** {coin} 芙帽幣"
+        ),
         color=EMBED_COLOR,
+    )
+    _set_user_thumbnail(embed, user)
+    if kind == "hourly":
+        accumulated = int(account["accumulated_hours"])
+        embed.add_field(
+            name=f"累積 {accumulated} 小時獎勵",
+            value=f"× {accumulated}",
+            inline=True,
+        )
+        embed.add_field(
+            name="每小時倍率",
+            value=_multiplier(multiplier),
+            inline=True,
+        )
+    else:
+        embed.add_field(
+            name="每日倍率",
+            value=_multiplier(multiplier),
+            inline=True,
+        )
+    embed.add_field(
+        name="合計",
+        value=f"**{_number(reward)}** {coin} 芙帽幣",
+        inline=False,
+    )
+    embed.add_field(
+        name="當前餘額",
+        value=_balance_line(account, guild),
+        inline=False,
     )
     embed.set_footer(text="UTC+8")
     return embed
+
+
+async def _claim_daily(context: CommandContext, user_id: int, now: datetime) -> dict[str, Any]:
+    account_before = await asyncio.to_thread(
+        context.store.economy_account,
+        str(user_id),
+    )
+    return await asyncio.to_thread(
+        context.store.claim_daily,
+        str(user_id),
+        now.date().isoformat(),
+        DAILY_BASE_REWARD,
+        level_data(account_before["level"]).daily_multiplier,
+        random.randint(100, 200) / 100,
+    )
+
+
+async def _claim_hourly(
+    context: CommandContext,
+    user_id: int,
+) -> dict[str, Any]:
+    account_before = await asyncio.to_thread(
+        context.store.economy_account,
+        str(user_id),
+    )
+    level = level_data(account_before["level"])
+    return await asyncio.to_thread(
+        context.store.claim_hourly,
+        str(user_id),
+        int(time.time() * 1000),
+        random.randint(BASE_REWARD_MIN, BASE_REWARD_MAX),
+        level.saved_hours,
+        level.hourly_multiplier,
+    )
+
+
+def _quick_checkin_embed(
+    discord_module: Any,
+    user: Any,
+    guild: discord.Guild | None,
+    daily: dict[str, Any],
+    hourly: dict[str, Any],
+    current_account: dict[str, Any],
+) -> Any:
+    coin = _currency_emoji(guild, "FumaoCoin")
+    embed = discord_module.Embed(title="⚡ 快速簽到", color=EMBED_COLOR)
+    _set_user_thumbnail(embed, user)
+
+    if daily.get("claimed"):
+        daily_value = (
+            f"獲得 **{_number(daily['base_reward'])}** {coin} 芙帽幣\n"
+            f"每日倍率：{_multiplier(float(daily['multiplier']))}\n"
+            f"合計：**{_number(daily['reward'])}** {coin} 芙帽幣"
+        )
+        daily_name = "每日簽到　成功"
+    else:
+        daily_value = "今天的每日獎勵已領取。"
+        daily_name = "每日簽到　已完成"
+    embed.add_field(name=daily_name, value=daily_value, inline=False)
+
+    if hourly.get("claimed"):
+        accumulated = int(hourly["accumulated_hours"])
+        hourly_value = (
+            f"累積 {accumulated} 小時獎勵　× {accumulated}\n"
+            f"每小時倍率：{_multiplier(float(hourly['multiplier']))}\n"
+            f"小計：**{_number(hourly['reward'])}** {coin} 芙帽幣"
+        )
+        hourly_name = "每小時簽到　成功"
+    else:
+        next_at = hourly.get("next_hourly_at")
+        next_text = "稍後"
+        if next_at:
+            next_text = _period_time(datetime.fromtimestamp(next_at / 1000, tz=TAIPEI))
+        hourly_value = f"每小時獎勵尚未刷新，請於 {next_text} 後再試。"
+        hourly_name = "每小時簽到　尚未刷新"
+    embed.add_field(name=hourly_name, value=hourly_value, inline=False)
+
+    received = sum(
+        int(result.get("reward", 0))
+        for result in (daily, hourly)
+        if result.get("claimed")
+    )
+    received_text = (
+        f"本次獲得 **{_number(received)}** {coin} 芙帽幣\n"
+        if received
+        else "本次沒有新的芙帽幣獎勵\n"
+    )
+    embed.add_field(
+        name="簽到結果",
+        value=(
+            f"{received_text}"
+            f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 芙帽幣．"
+            f"簽到等級：Lv.{current_account['level']}\n"
+            f"今天 {_period_time(datetime.now(TAIPEI))}"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="請遵守遊戲規則，以免遭到芙帽的制裁。")
+    return embed
+
+
+async def handle_quick_checkin(message: discord.Message, context: CommandContext) -> bool:
+    """Automatically perform both check-ins in the dedicated quick-checkin channel."""
+    if (
+        message.author.bot
+        or message.guild is None
+        or message.guild.id != QUICK_CHECKIN_GUILD_ID
+        or message.channel.id != QUICK_CHECKIN_CHANNEL_ID
+    ):
+        return False
+
+    now = datetime.now(TAIPEI)
+    daily, hourly = await asyncio.gather(
+        _claim_daily(context, message.author.id, now),
+        _claim_hourly(context, message.author.id),
+    )
+    current_account = await asyncio.to_thread(
+        context.store.economy_account,
+        str(message.author.id),
+    )
+    await message.channel.send(
+        embed=_quick_checkin_embed(
+            discord,
+            message.author,
+            message.guild,
+            daily,
+            hourly,
+            current_account,
+        ),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return True
 
 
 class UpgradeView(discord.ui.View):
@@ -460,20 +587,7 @@ def register_economy(
     @app_commands.guild_only()
     async def daily_check_in(interaction: Any) -> None:
         now = datetime.now(TAIPEI)
-        account_before = await asyncio.to_thread(
-            context.store.economy_account,
-            str(interaction.user.id),
-        )
-        base_reward = DAILY_BASE_REWARD
-        random_multiplier = random.randint(100, 200) / 100
-        account = await asyncio.to_thread(
-            context.store.claim_daily,
-            str(interaction.user.id),
-            now.date().isoformat(),
-            base_reward,
-            level_data(account_before["level"]).daily_multiplier,
-            random_multiplier,
-        )
+        account = await _claim_daily(context, interaction.user.id, now)
         embed = _checkin_embed(discord_module, interaction.user, interaction.guild, account, "daily")
         view = _attach_upgrade_view(context, interaction, embed, account)
         if view is None:
@@ -484,19 +598,7 @@ def register_economy(
     @economy.command(name="每小時簽到", description="每小時簽到並獲得芙帽幣")
     @app_commands.guild_only()
     async def hourly_check_in(interaction: Any) -> None:
-        account_before = await asyncio.to_thread(
-            context.store.economy_account,
-            str(interaction.user.id),
-        )
-        level = level_data(account_before["level"])
-        account = await asyncio.to_thread(
-            context.store.claim_hourly,
-            str(interaction.user.id),
-            int(time.time() * 1000),
-            random.randint(BASE_REWARD_MIN, BASE_REWARD_MAX),
-            level.saved_hours,
-            level.hourly_multiplier,
-        )
+        account = await _claim_hourly(context, interaction.user.id)
         embed = _checkin_embed(discord_module, interaction.user, interaction.guild, account, "hourly")
         view = _attach_upgrade_view(context, interaction, embed, account)
         if view is None:
