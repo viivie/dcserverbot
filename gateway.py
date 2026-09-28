@@ -69,10 +69,15 @@ def run_gateway(config: Config) -> None:
         for guild in client.guilds:
             try:
                 client.tree.copy_global_to(guild=guild)
-                await client.tree.sync(guild=guild)
-                LOGGER.info("synced /worship to guild %s (%s)", guild.id, guild.name)
+                synced_commands = await client.tree.sync(guild=guild)
+                LOGGER.info(
+                    "synced %d slash commands to guild %s (%s)",
+                    len(synced_commands),
+                    guild.id,
+                    guild.name,
+                )
             except discord.HTTPException as error:
-                LOGGER.warning("could not sync /worship to guild %s: %s", guild.id, error)
+                LOGGER.warning("could not sync slash commands to guild %s: %s", guild.id, error)
         client.commands_synced = True
 
     @client.event
