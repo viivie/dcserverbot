@@ -16,6 +16,7 @@ from .cleanup import DeleteConfirmView
 from .economy import money_log_view
 from .bets import (
     get_bet_template,
+    BetOpenView,
     resolve_bet_message,
     setup_bet_card,
     start_bet_message,
@@ -437,6 +438,26 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                     return True
+            bet_details = await _run_in_thread(store.bet_details, bet_message_id)
+            if bet_details is None:
+                await message.channel.send(
+                    "找不到這個賭盤。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            normalized_options = []
+            for option_name in option_names:
+                if option_name.isdigit():
+                    option_index = int(option_name)
+                    if not 1 <= option_index <= len(bet_details["options"]):
+                        await message.channel.send(
+                            f"賭盤選項編號 `{option_name}` 不存在。",
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        return True
+                    option_name = bet_details["options"][option_index - 1][0]
+                normalized_options.append(option_name)
+            option_names = list(dict.fromkeys(normalized_options))
             try:
                 added_count = await _run_in_thread(
                     store.prohibit_bet_options,
@@ -492,7 +513,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 )
                 return True
             try:
-                result_embed = await start_bet_message(message, store, message_id)
+                result_embed, result_view = await start_bet_message(message, store, message_id)
             except ValueError as error:
                 await message.channel.send(
                     str(error),
@@ -500,10 +521,12 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 )
                 return True
             result_embed.title = "▶️ 賭盤已開放下注"
-            await message.channel.send(
-                view=v2_view_from_embed(result_embed),
+            confirmation = await message.channel.send(
+                view=v2_view_from_embed(result_embed, legacy_view=result_view),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            result_view.message = confirmation
+            result_view.schedule_expiry()
             return True
 
         if command == "stop-bet":

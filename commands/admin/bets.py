@@ -613,7 +613,7 @@ async def start_bet_message(
     message: discord.Message,
     store: Any,
     message_id: str,
-) -> discord.Embed:
+) -> tuple[discord.Embed, BetOpenView]:
     bet = await asyncio.to_thread(store.bet_details, message_id)
     if bet is None:
         raise ValueError("找不到這個賭盤")
@@ -652,7 +652,7 @@ async def start_bet_message(
     )
     await target.edit(view=v2_view_from_embed(embed, legacy_view=bet_view))
     bet_view.schedule_expiry()
-    return embed
+    return embed, bet_view
 
 
 def setup_bet_card(
