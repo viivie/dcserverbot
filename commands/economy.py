@@ -27,9 +27,11 @@ ROBBERY_COOLDOWN_SECONDS = 1.0
 CURRENCY_COOLDOWNS: dict[int, float] = {}
 CURRENCY_EMOJIS = {
     "FumaoCoin": "<:FumaoCoin:1554060935725973554>",
+    "YuzuCoin": "<:yuzucoin:1471758283403431947>",
     "Crystal": "<:Crystal:1554060934140403815>",
     "grace": "<:grace:1554060937244180542>",
 }
+CHECKIN_TITLE_EMOJI = "<:mura_excited:1429257164811407571>"
 ROBBERY_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "economy"
 
 
@@ -106,6 +108,11 @@ def _multiplier(value: float) -> str:
     return f"×{value:.2f}"
 
 
+def _embed_divider(*values: str) -> str:
+    width = max((len(value) for value in values), default=16) + 8
+    return "─" * max(24, min(64, width))
+
+
 def _currency_emoji(guild: discord.Guild | None, name: str) -> str:
     if name in CURRENCY_EMOJIS:
         return CURRENCY_EMOJIS[name]
@@ -123,9 +130,9 @@ def _period_time(now: datetime) -> str:
 
 
 def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
-    coin = _currency_emoji(guild, "FumaoCoin")
+    coin = _currency_emoji(guild, "YuzuCoin")
     return (
-        f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
+        f"當前餘額：{_number(account['fumao_coins'])} {coin} 柚子幣．"
         f"簽到等級：Lv.{account['level']}"
     )
 
@@ -254,7 +261,7 @@ def _checkin_embed(
     account: dict[str, Any],
     kind: str,
 ) -> Any:
-    coin = _currency_emoji(guild, "FumaoCoin")
+    coin = _currency_emoji(guild, "YuzuCoin")
     if not account.get("claimed"):
         if kind == "daily":
             description = "今天已經完成每日簽到，明天再來吧。"
@@ -266,7 +273,7 @@ def _checkin_embed(
             description = f"每小時簽到還沒到時間，請於 {next_text} 後再試。"
         embed = discord_module.Embed(
             title="🕘 簽到尚未刷新",
-            description=f"{user.mention}\n{description}\n\n{_balance_line(account, guild)}",
+            description=f"{description}\n\n{_balance_line(account, guild)}",
             color=0x95A5A6,
         )
         _set_user_thumbnail(embed, user)
@@ -275,43 +282,43 @@ def _checkin_embed(
     base_reward = int(account["base_reward"])
     reward = int(account["reward"])
     multiplier = float(account["multiplier"])
+    if kind == "hourly":
+        accumulated = int(account["accumulated_hours"])
+        accumulated_reward = base_reward * accumulated
+        calculation_lines = [
+            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 柚子幣",
+            f"每小時倍率　　　　{_multiplier(multiplier)}",
+        ]
+    else:
+        calculation_lines = [f"每日倍率　　　　{_multiplier(multiplier)}"]
+
+    divider = _embed_divider(
+        f"獲得 {reward} 柚子幣",
+        *calculation_lines,
+        f"合計 {reward} 柚子幣",
+    )
+    balance = (
+        f"當前餘額：{_number(account['fumao_coins'])} {coin} 柚子幣．"
+        f"簽到等級：Lv.{account['level']}"
+    )
+    description = "\n".join(
+        [
+            divider,
+            f"獲得 **{_number(reward)}** {coin} 柚子幣",
+            "",
+            *calculation_lines,
+            divider,
+            f"合計　　　　　　　**{_number(reward)}** {coin} 柚子幣",
+            divider,
+            balance,
+        ]
+    )
     embed = discord_module.Embed(
-        title=f"✅ {'每小時' if kind == 'hourly' else '每日'}簽到成功",
-        description=(
-            f"{user.mention}\n"
-            f"獲得 **{_number(base_reward)}** {coin} 芙帽幣"
-        ),
+        title=f"{CHECKIN_TITLE_EMOJI} {'每小時' if kind == 'hourly' else '每日'}簽到成功",
+        description=description,
         color=EMBED_COLOR,
     )
     _set_user_thumbnail(embed, user)
-    if kind == "hourly":
-        accumulated = int(account["accumulated_hours"])
-        embed.add_field(
-            name=f"累積 {accumulated} 小時獎勵",
-            value=f"× {accumulated}",
-            inline=True,
-        )
-        embed.add_field(
-            name="每小時倍率",
-            value=_multiplier(multiplier),
-            inline=True,
-        )
-    else:
-        embed.add_field(
-            name="每日倍率",
-            value=_multiplier(multiplier),
-            inline=True,
-        )
-    embed.add_field(
-        name="合計",
-        value=f"**{_number(reward)}** {coin} 芙帽幣",
-        inline=False,
-    )
-    embed.add_field(
-        name="當前餘額",
-        value=_balance_line(account, guild),
-        inline=False,
-    )
     embed.set_footer(text="UTC+8")
     return embed
 
@@ -321,13 +328,13 @@ async def _claim_daily(context: CommandContext, user_id: int, now: datetime) -> 
         context.store.economy_account,
         str(user_id),
     )
+    random_base_reward = random.randint(DAILY_BASE_REWARD, DAILY_BASE_REWARD * 2)
     return await asyncio.to_thread(
         context.store.claim_daily,
         str(user_id),
         now.date().isoformat(),
-        DAILY_BASE_REWARD,
+        random_base_reward,
         level_data(account_before["level"]).daily_multiplier,
-        random.randint(100, 200) / 100,
     )
 
 
@@ -358,15 +365,15 @@ def _quick_checkin_embed(
     hourly: dict[str, Any],
     current_account: dict[str, Any],
 ) -> Any:
-    coin = _currency_emoji(guild, "FumaoCoin")
+    coin = _currency_emoji(guild, "YuzuCoin")
     embed = discord_module.Embed(title="⚡ 快速簽到", color=EMBED_COLOR)
     _set_user_thumbnail(embed, user)
 
     if daily.get("claimed"):
         daily_value = (
-            f"獲得 **{_number(daily['base_reward'])}** {coin} 芙帽幣\n"
-            f"每日倍率：{_multiplier(float(daily['multiplier']))}\n"
-            f"合計：**{_number(daily['reward'])}** {coin} 芙帽幣"
+            f"獲得 **{_number(daily['reward'])}** {coin} 柚子幣\n"
+            f"每日倍率　　　　{_multiplier(float(daily['multiplier']))}\n"
+            f"合計　　　　　　　**{_number(daily['reward'])}** {coin} 柚子幣"
         )
         daily_name = "每日簽到　成功"
     else:
@@ -376,10 +383,12 @@ def _quick_checkin_embed(
 
     if hourly.get("claimed"):
         accumulated = int(hourly["accumulated_hours"])
+        accumulated_reward = int(hourly["base_reward"]) * accumulated
         hourly_value = (
-            f"累積 {accumulated} 小時獎勵　× {accumulated}\n"
-            f"每小時倍率：{_multiplier(float(hourly['multiplier']))}\n"
-            f"小計：**{_number(hourly['reward'])}** {coin} 芙帽幣"
+            f"獲得 **{_number(hourly['reward'])}** {coin} 柚子幣\n"
+            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 柚子幣\n"
+            f"每小時倍率　　　　{_multiplier(float(hourly['multiplier']))}\n"
+            f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 柚子幣"
         )
         hourly_name = "每小時簽到　成功"
     else:
@@ -390,6 +399,11 @@ def _quick_checkin_embed(
         hourly_value = f"每小時獎勵尚未刷新，請於 {next_text} 後再試。"
         hourly_name = "每小時簽到　尚未刷新"
     embed.add_field(name=hourly_name, value=hourly_value, inline=False)
+    embed.add_field(
+        name="\u200b",
+        value=_embed_divider(daily_value, hourly_value),
+        inline=False,
+    )
 
     received = sum(
         int(result.get("reward", 0))
@@ -397,15 +411,15 @@ def _quick_checkin_embed(
         if result.get("claimed")
     )
     received_text = (
-        f"本次獲得 **{_number(received)}** {coin} 芙帽幣\n"
+        f"本次獲得 **{_number(received)}** {coin} 柚子幣\n"
         if received
-        else "本次沒有新的芙帽幣獎勵\n"
+        else "本次沒有新的柚子幣獎勵\n"
     )
     embed.add_field(
         name="簽到結果",
         value=(
             f"{received_text}"
-            f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 芙帽幣．"
+            f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 柚子幣．"
             f"簽到等級：Lv.{current_account['level']}\n"
             f"今天 {_period_time(datetime.now(TAIPEI))}"
         ),
