@@ -709,7 +709,7 @@ def register_economy(
             )
             return
 
-        success = random.random() < 0.20
+        success = random.random() < 0.10
         requested_amount = (
             random.randint(1_000, 10_000)
             if success
