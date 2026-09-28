@@ -9,6 +9,7 @@ from typing import Any
 
 import discord
 
+from components_v2 import v2_view_from_embed
 from commands.master import get_active_view, register_active_view
 from commands.economy import CURRENCY_EMOJIS
 from .cleanup import DeleteConfirmView
@@ -319,17 +320,19 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                     await _send_sql_message(
                         message,
                         public,
-                        embed=sql_result_embed(result),
+                        view=v2_view_from_embed(sql_result_embed(result)),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                 except sqlite3.Error as error:
                     await _send_sql_message(
                         message,
                         public,
-                        embed=discord.Embed(
-                            title="❌ SQL 查詢失敗",
-                            description=str(error)[:4000],
-                            color=0xE74C3C,
+                        view=v2_view_from_embed(
+                            discord.Embed(
+                                title="❌ SQL 查詢失敗",
+                                description=str(error)[:4000],
+                                color=0xE74C3C,
+                            )
                         ),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
@@ -350,8 +353,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             confirmation = await _send_sql_message(
                 message,
                 public,
-                embed=embed,
-                view=view,
+                view=v2_view_from_embed(embed, legacy_view=view),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             view.message = confirmation
@@ -426,8 +428,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             )
             view = DeleteConfirmView(message.author.id, message.channel, count)
             confirmation = await message.channel.send(
-                embed=embed,
-                view=view,
+                view=v2_view_from_embed(embed, legacy_view=view),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             view.message = confirmation
@@ -481,7 +482,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 color=0x2ECC71,
             )
             await message.channel.send(
-                embed=embed,
+                view=v2_view_from_embed(embed),
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
@@ -575,8 +576,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                         color=0x2ECC71,
                     )
                 await message.channel.send(
-                    content=member.mention,
-                    embed=embed,
+                    view=v2_view_from_embed(embed, content=member.mention),
                     allowed_mentions=discord.AllowedMentions(
                         users=True,
                         roles=True,
@@ -593,9 +593,11 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             )
             view = GiveRoleConfirmView(member, roles)
             confirmation = await message.channel.send(
-                content=member.mention,
-                embed=embed,
-                view=view,
+                view=v2_view_from_embed(
+                    embed,
+                    content=member.mention,
+                    legacy_view=view,
+                ),
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=True,

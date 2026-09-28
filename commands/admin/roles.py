@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import discord
 
+from components_v2 import v2_view_from_embed
+
 
 class GiveRoleConfirmView(discord.ui.View):
     def __init__(
@@ -68,7 +70,7 @@ class GiveRoleConfirmView(discord.ui.View):
         embed = await self._grant_roles("User accepted an admin role grant request")
 
         try:
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.edit_original_response(view=v2_view_from_embed(embed))
         except discord.NotFound:
             pass
         self.stop()
@@ -91,7 +93,7 @@ class GiveRoleConfirmView(discord.ui.View):
             description=f"{self.recipient.mention} 拒絕接受 {self.role_mentions}。",
             color=0x95A5A6,
         )
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.edit_message(view=v2_view_from_embed(embed))
         self.stop()
 
     async def admin_press(self, button_number: int) -> None:
@@ -111,5 +113,5 @@ class GiveRoleConfirmView(discord.ui.View):
 
         self.resolved = True
         if self.message is not None:
-            await self.message.edit(embed=embed, view=None)
+            await self.message.edit(view=v2_view_from_embed(embed))
         self.stop()

@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from components_v2 import v2_view_from_embed
+
 if TYPE_CHECKING:
     from commands.context import CommandContext
 
@@ -44,8 +46,7 @@ def register_worship_someone(
         embed.set_image(url=str(target.display_avatar.url))
 
         await interaction.response.send_message(
-            content=f"{target.mention}",
-            embed=embed,
+            view=v2_view_from_embed(embed, content=target.mention),
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
                 roles=False,

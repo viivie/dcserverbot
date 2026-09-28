@@ -6,6 +6,8 @@ from typing import Any
 
 import discord
 
+from components_v2 import v2_view_from_embed
+
 
 class DeleteConfirmView(discord.ui.View):
     def __init__(self, requester_id: int, channel: Any, count: int) -> None:
@@ -49,7 +51,7 @@ class DeleteConfirmView(discord.ui.View):
             color=0x2ECC71,
         )
         try:
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.edit_original_response(view=v2_view_from_embed(embed))
         except discord.NotFound:
             pass
         self.stop()
@@ -72,7 +74,7 @@ class DeleteConfirmView(discord.ui.View):
             description=f"頻道：{getattr(self.channel, 'mention', self.channel)}",
             color=0x95A5A6,
         )
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.edit_message(view=v2_view_from_embed(embed))
         self.stop()
 
     async def on_timeout(self) -> None:
@@ -85,7 +87,7 @@ class DeleteConfirmView(discord.ui.View):
             color=0x95A5A6,
         )
         try:
-            await self.message.edit(embed=embed, view=None)
+            await self.message.edit(view=v2_view_from_embed(embed))
         except discord.HTTPException:
             pass
 
@@ -146,7 +148,7 @@ class DeleteConfirmView(discord.ui.View):
         self.resolved = True
         if self.message is not None:
             try:
-                await self.message.edit(embed=embed, view=None)
+                await self.message.edit(view=v2_view_from_embed(embed))
             except discord.NotFound:
                 pass
         self.stop()

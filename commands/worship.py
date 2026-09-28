@@ -8,6 +8,10 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+import discord
+
+from components_v2 import v2_view_from_embed
+
 if TYPE_CHECKING:
     from commands.context import CommandContext
 
@@ -88,8 +92,10 @@ def register_worship(tree: Any, discord: Any, app_commands: Any, context: Comman
         if avatar_url:
             embed.set_image(url=avatar_url)
         await interaction.edit_original_response(
-            content=" ".join(f"<@{value}>" for value in mentions),
-            embed=embed,
+            view=v2_view_from_embed(
+                embed,
+                content=" ".join(f"<@{value}>" for value in mentions),
+            ),
             allowed_mentions=discord.AllowedMentions(
                 users=True, roles=False, everyone=False, replied_user=False
             ),

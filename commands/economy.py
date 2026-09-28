@@ -12,6 +12,8 @@ from typing import Any, TYPE_CHECKING
 
 import discord
 
+from components_v2 import v2_view_from_embed
+
 if TYPE_CHECKING:
     from commands.context import CommandContext
 
@@ -108,11 +110,6 @@ def _multiplier(value: float) -> str:
     return f"×{value:.2f}"
 
 
-def _embed_divider(*values: str) -> str:
-    width = max((len(value) for value in values), default=16) + 8
-    return "─" * max(24, min(64, width))
-
-
 def _currency_emoji(guild: discord.Guild | None, name: str) -> str:
     if name in CURRENCY_EMOJIS:
         return CURRENCY_EMOJIS[name]
@@ -135,12 +132,6 @@ def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 柚子幣．"
         f"簽到等級：Lv.{account['level']}"
     )
-
-
-def _set_user_thumbnail(embed: Any, user: Any) -> None:
-    avatar = getattr(getattr(user, "display_avatar", None), "url", None)
-    if avatar:
-        embed.set_thumbnail(url=str(avatar))
 
 
 def _robbery_embed(
@@ -254,13 +245,11 @@ def _upgrade_embed(
     return embed
 
 
-def _checkin_embed(
-    discord_module: Any,
-    user: Any,
+def _checkin_sections(
     guild: discord.Guild | None,
     account: dict[str, Any],
     kind: str,
-) -> Any:
+) -> list[str]:
     coin = _currency_emoji(guild, "YuzuCoin")
     if not account.get("claimed"):
         if kind == "daily":
@@ -271,13 +260,7 @@ def _checkin_embed(
             if next_at:
                 next_text = _period_time(datetime.fromtimestamp(next_at / 1000, tz=TAIPEI))
             description = f"每小時簽到還沒到時間，請於 {next_text} 後再試。"
-        embed = discord_module.Embed(
-            title="🕘 簽到尚未刷新",
-            description=f"{description}\n\n{_balance_line(account, guild)}",
-            color=0x95A5A6,
-        )
-        _set_user_thumbnail(embed, user)
-        return embed
+        return ["## 🕘 簽到尚未刷新", f"{description}\n\n{_balance_line(account, guild)}"]
 
     base_reward = int(account["base_reward"])
     reward = int(account["reward"])
@@ -292,35 +275,16 @@ def _checkin_embed(
     else:
         calculation_lines = [f"每日倍率　　　　{_multiplier(multiplier)}"]
 
-    divider = _embed_divider(
-        f"獲得 {reward} 柚子幣",
-        *calculation_lines,
-        f"合計 {reward} 柚子幣",
-    )
     balance = (
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 柚子幣．"
         f"簽到等級：Lv.{account['level']}"
     )
-    description = "\n".join(
-        [
-            divider,
-            f"獲得 **{_number(reward)}** {coin} 柚子幣",
-            "",
-            *calculation_lines,
-            divider,
-            f"合計　　　　　　　**{_number(reward)}** {coin} 柚子幣",
-            divider,
-            balance,
-        ]
-    )
-    embed = discord_module.Embed(
-        title=f"{CHECKIN_TITLE_EMOJI} {'每小時' if kind == 'hourly' else '每日'}簽到成功",
-        description=description,
-        color=EMBED_COLOR,
-    )
-    _set_user_thumbnail(embed, user)
-    embed.set_footer(text="UTC+8")
-    return embed
+    return [
+        f"## {CHECKIN_TITLE_EMOJI} **{'每小時' if kind == 'hourly' else '每日'}簽到成功**",
+        f"獲得 **{_number(reward)}** {coin} 柚子幣\n\n" + "\n".join(calculation_lines),
+        f"合計　　　　　　　**{_number(reward)}** {coin} 柚子幣",
+        f"{balance}\n\nUTC+8",
+    ]
 
 
 async def _claim_daily(context: CommandContext, user_id: int, now: datetime) -> dict[str, Any]:
@@ -357,17 +321,13 @@ async def _claim_hourly(
     )
 
 
-def _quick_checkin_embed(
-    discord_module: Any,
-    user: Any,
+def _quick_checkin_sections(
     guild: discord.Guild | None,
     daily: dict[str, Any],
     hourly: dict[str, Any],
     current_account: dict[str, Any],
-) -> Any:
+) -> list[str]:
     coin = _currency_emoji(guild, "YuzuCoin")
-    embed = discord_module.Embed(title="⚡ 快速簽到", color=EMBED_COLOR)
-    _set_user_thumbnail(embed, user)
 
     if daily.get("claimed"):
         daily_value = (
@@ -379,8 +339,6 @@ def _quick_checkin_embed(
     else:
         daily_value = "今天的每日獎勵已領取。"
         daily_name = "每日簽到　已完成"
-    embed.add_field(name=daily_name, value=daily_value, inline=False)
-
     if hourly.get("claimed"):
         accumulated = int(hourly["accumulated_hours"])
         accumulated_reward = int(hourly["base_reward"]) * accumulated
@@ -398,12 +356,6 @@ def _quick_checkin_embed(
             next_text = _period_time(datetime.fromtimestamp(next_at / 1000, tz=TAIPEI))
         hourly_value = f"每小時獎勵尚未刷新，請於 {next_text} 後再試。"
         hourly_name = "每小時簽到　尚未刷新"
-    embed.add_field(name=hourly_name, value=hourly_value, inline=False)
-    embed.add_field(
-        name="\u200b",
-        value=_embed_divider(daily_value, hourly_value),
-        inline=False,
-    )
 
     received = sum(
         int(result.get("reward", 0))
@@ -415,18 +367,90 @@ def _quick_checkin_embed(
         if received
         else "本次沒有新的柚子幣獎勵\n"
     )
-    embed.add_field(
-        name="簽到結果",
-        value=(
-            f"{received_text}"
+    return [
+        "## ⚡ **快速簽到**",
+        f"### {daily_name}\n{daily_value}",
+        f"### {hourly_name}\n{hourly_value}",
+        (
+            f"### 簽到結果\n{received_text}"
             f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 柚子幣．"
             f"簽到等級：Lv.{current_account['level']}\n"
             f"今天 {_period_time(datetime.now(TAIPEI))}"
         ),
-        inline=False,
-    )
-    embed.set_footer(text="請遵守遊戲規則，以免遭到芙帽的制裁。")
-    return embed
+    ]
+
+
+class CheckinLayoutView(discord.ui.LayoutView):
+    """Discord Components V2 layout used by check-in messages."""
+
+    def __init__(
+        self,
+        context: CommandContext,
+        user: Any,
+        sections: list[str],
+        *,
+        show_upgrade_button: bool,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.context = context
+
+        container = discord.ui.Container(accent_color=EMBED_COLOR)
+        avatar = getattr(getattr(user, "display_avatar", None), "url", None)
+        if avatar:
+            container.add_item(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(sections[0]),
+                    accessory=discord.ui.Thumbnail(str(avatar)),
+                )
+            )
+        else:
+            container.add_item(discord.ui.TextDisplay(sections[0]))
+
+        for section in sections[1:]:
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(section))
+
+        if show_upgrade_button:
+            container.add_item(discord.ui.Separator())
+            action_row = discord.ui.ActionRow()
+            upgrade_button = discord.ui.Button(
+                label="升級簽到等級",
+                style=discord.ButtonStyle.primary,
+            )
+            upgrade_button.callback = self._show_upgrade
+            action_row.add_item(upgrade_button)
+            container.add_item(action_row)
+
+        self.add_item(container)
+
+    async def _show_upgrade(self, interaction: discord.Interaction) -> None:
+        account = await asyncio.to_thread(
+            self.context.store.economy_account,
+            str(interaction.user.id),
+        )
+        if not can_upgrade(account):
+            await interaction.response.send_message(
+                view=v2_view_from_embed(
+                    _upgrade_embed(discord, account, interaction.guild, confirm=False)
+                ),
+                ephemeral=True,
+            )
+            return
+
+        private_view = UpgradeView(
+            self.context,
+            interaction.user.id,
+            interaction.guild,
+            None,
+        )
+        private_view._set_confirmation_buttons()
+        await interaction.response.send_message(
+            view=v2_view_from_embed(
+                _upgrade_embed(discord, account, interaction.guild, confirm=True),
+                legacy_view=private_view,
+            ),
+            ephemeral=True,
+        )
 
 
 async def handle_quick_checkin(message: discord.Message, context: CommandContext) -> bool:
@@ -448,14 +472,12 @@ async def handle_quick_checkin(message: discord.Message, context: CommandContext
         context.store.economy_account,
         str(message.author.id),
     )
-    await message.channel.send(
-        embed=_quick_checkin_embed(
-            discord,
+    await message.reply(
+        view=CheckinLayoutView(
+            context,
             message.author,
-            message.guild,
-            daily,
-            hourly,
-            current_account,
+            _quick_checkin_sections(message.guild, daily, hourly, current_account),
+            show_upgrade_button=False,
         ),
         allowed_mentions=discord.AllowedMentions.none(),
     )
@@ -508,7 +530,9 @@ class UpgradeView(discord.ui.View):
         )
         if not can_upgrade(account):
             await interaction.response.send_message(
-                embed=_upgrade_embed(discord, account, self.guild, confirm=False),
+                view=v2_view_from_embed(
+                    _upgrade_embed(discord, account, self.guild, confirm=False)
+                ),
                 ephemeral=True,
             )
             return
@@ -521,8 +545,10 @@ class UpgradeView(discord.ui.View):
         )
         private_view._set_confirmation_buttons()
         await interaction.response.send_message(
-            embed=_upgrade_embed(discord, account, interaction.guild, confirm=True),
-            view=private_view,
+            view=v2_view_from_embed(
+                _upgrade_embed(discord, account, interaction.guild, confirm=True),
+                legacy_view=private_view,
+            ),
             ephemeral=True,
         )
 
@@ -533,7 +559,7 @@ class UpgradeView(discord.ui.View):
         target = next_level(account)
         if target is None:
             await interaction.response.edit_message(
-                embed=discord.Embed(title="已達最高等級", color=EMBED_COLOR), view=None
+                view=v2_view_from_embed(discord.Embed(title="已達最高等級", color=EMBED_COLOR))
             )
             self.stop()
             return
@@ -562,30 +588,22 @@ class UpgradeView(discord.ui.View):
                 description="目前餘額不足，或這個升級已經被其他操作完成。",
                 color=0xE74C3C,
             )
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.edit_message(view=v2_view_from_embed(embed))
         self.stop()
 
     async def _cancel_upgrade(self, interaction: discord.Interaction) -> None:
         if await self._deny_other_user(interaction):
             return
         await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="已取消升級",
-                description="這次沒有扣除任何資源。",
-                color=0x95A5A6,
+            view=v2_view_from_embed(
+                discord.Embed(
+                    title="已取消升級",
+                    description="這次沒有扣除任何資源。",
+                    color=0x95A5A6,
+                )
             ),
-            view=None,
         )
         self.stop()
-
-
-def _attach_upgrade_view(
-    context: CommandContext,
-    interaction: Any,
-    embed: Any,
-    account: dict[str, Any],
-) -> UpgradeView | None:
-    return UpgradeView(context, interaction.user.id, interaction.guild, embed)
 
 
 def register_economy(
@@ -602,23 +620,27 @@ def register_economy(
     async def daily_check_in(interaction: Any) -> None:
         now = datetime.now(TAIPEI)
         account = await _claim_daily(context, interaction.user.id, now)
-        embed = _checkin_embed(discord_module, interaction.user, interaction.guild, account, "daily")
-        view = _attach_upgrade_view(context, interaction, embed, account)
-        if view is None:
-            await interaction.response.send_message(embed=embed)
-        else:
-            await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(
+            view=CheckinLayoutView(
+                context,
+                interaction.user,
+                _checkin_sections(interaction.guild, account, "daily"),
+                show_upgrade_button=True,
+            )
+        )
 
     @economy.command(name="每小時簽到", description="每小時簽到並獲得芙帽幣")
     @app_commands.guild_only()
     async def hourly_check_in(interaction: Any) -> None:
         account = await _claim_hourly(context, interaction.user.id)
-        embed = _checkin_embed(discord_module, interaction.user, interaction.guild, account, "hourly")
-        view = _attach_upgrade_view(context, interaction, embed, account)
-        if view is None:
-            await interaction.response.send_message(embed=embed)
-        else:
-            await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(
+            view=CheckinLayoutView(
+                context,
+                interaction.user,
+                _checkin_sections(interaction.guild, account, "hourly"),
+                show_upgrade_button=True,
+            )
+        )
 
     @economy.command(name="搶芙帽教聖殿", description="嘗試搶劫芙帽教聖殿")
     @app_commands.guild_only()
@@ -672,9 +694,9 @@ def register_economy(
             success,
         )
         if file is None:
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(view=v2_view_from_embed(embed))
         else:
-            await interaction.response.send_message(embed=embed, file=file)
+            await interaction.response.send_message(view=v2_view_from_embed(embed), file=file)
 
     @economy.command(name="餘額", description="查看芙帽幣、水晶與神恩餘額")
     @app_commands.guild_only()
@@ -700,6 +722,6 @@ def register_economy(
             color=EMBED_COLOR,
         )
         embed.set_footer(text="UTC+8")
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(view=v2_view_from_embed(embed))
 
     tree.add_command(economy)

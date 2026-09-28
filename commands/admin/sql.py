@@ -9,6 +9,8 @@ from typing import Any
 
 import discord
 
+from components_v2 import v2_view_from_embed
+
 
 class SqlConfirmView(discord.ui.View):
     def __init__(self, requester_id: int, store: Any, statement: str) -> None:
@@ -52,7 +54,7 @@ class SqlConfirmView(discord.ui.View):
                 color=0xE74C3C,
             )
         try:
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.edit_original_response(view=v2_view_from_embed(embed))
         except discord.NotFound:
             pass
         self.stop()
@@ -75,7 +77,7 @@ class SqlConfirmView(discord.ui.View):
             description="沒有執行 SQL。",
             color=0x95A5A6,
         )
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.edit_message(view=v2_view_from_embed(embed))
         self.stop()
 
     async def on_timeout(self) -> None:
@@ -88,7 +90,7 @@ class SqlConfirmView(discord.ui.View):
             color=0x95A5A6,
         )
         try:
-            await self.message.edit(embed=embed, view=None)
+            await self.message.edit(view=v2_view_from_embed(embed))
         except discord.HTTPException:
             pass
 
@@ -119,7 +121,7 @@ class SqlConfirmView(discord.ui.View):
 
         if self.message is not None:
             try:
-                await self.message.edit(embed=embed, view=None)
+                await self.message.edit(view=v2_view_from_embed(embed))
             except discord.NotFound:
                 pass
         self.stop()

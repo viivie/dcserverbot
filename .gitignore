@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.log
+.venv/
 
 # Runtime data must stay local and must not be committed.
 data/*

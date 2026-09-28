@@ -9,6 +9,8 @@ from typing import Any, TYPE_CHECKING
 import discord
 from discord import app_commands as discord_app_commands
 
+from components_v2 import v2_view_from_embed
+
 if TYPE_CHECKING:
     from commands.context import CommandContext
 
@@ -115,13 +117,14 @@ def register_ritual(
         # Create the initial card first, then immediately edit it again so
         # Discord displays the edited marker before the visible animation.
         await interaction.edit_original_response(
-            content=None,
-            embed=_animation_embed(
-                discord_module,
-                interaction.user,
-                target,
-                "🛐 正在向芙帽祈禱，請求她揭示命運……",
-                "▱▱▱▱▱▱",
+            view=v2_view_from_embed(
+                _animation_embed(
+                    discord_module,
+                    interaction.user,
+                    target,
+                    "🛐 正在向芙帽祈禱，請求她揭示命運……",
+                    "▱▱▱▱▱▱",
+                )
             ),
         )
         for status, progress, delay in (
@@ -133,24 +136,26 @@ def register_ritual(
             ("🌠 偉大的芙帽正在揭開命運的一角……", "▰▰▰▰▰▰", 2),
         ):
             await interaction.edit_original_response(
-                content=None,
-                embed=_animation_embed(
-                    discord_module,
-                    interaction.user,
-                    target,
-                    status,
-                    progress,
+                view=v2_view_from_embed(
+                    _animation_embed(
+                        discord_module,
+                        interaction.user,
+                        target,
+                        status,
+                        progress,
+                    )
                 ),
             )
             await asyncio.sleep(delay)
 
         outcome = draw_ritual(mode_name)
         await interaction.edit_original_response(
-            content=None,
-            embed=_result_embed(
-                discord_module,
-                interaction.user,
-                target,
-                outcome,
+            view=v2_view_from_embed(
+                _result_embed(
+                    discord_module,
+                    interaction.user,
+                    target,
+                    outcome,
+                )
             ),
         )

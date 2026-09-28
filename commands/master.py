@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from components_v2 import v2_view_from_embed
+
 if TYPE_CHECKING:
     from commands.context import CommandContext
 
@@ -317,8 +319,7 @@ def register_master(
             timeout,
         )
         await interaction.response.send_message(
-            embed=embed,
-            view=view,
+            view=v2_view_from_embed(embed, legacy_view=view),
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
                 roles=False,
@@ -386,8 +387,7 @@ def register_master(
         )
         view = ReleaseView(actor, target, context.store, guild_id, timeout)
         await interaction.response.send_message(
-            embed=embed,
-            view=view,
+            view=v2_view_from_embed(embed, legacy_view=view),
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
                 roles=False,
@@ -439,7 +439,7 @@ def register_master(
         if not slave_ids and not master_ids:
             embed.description = "目前沒有主奴關係。"
         await interaction.response.send_message(
-            embed=embed,
+            view=v2_view_from_embed(embed),
             ephemeral=not public,
             allowed_mentions=discord_module.AllowedMentions(
                 users=True,
