@@ -317,10 +317,13 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             if message.guild is None:
                 await message.author.send("賭盤只能在伺服器頻道建立。")
                 return True
-            await message.channel.send(
-                view=setup_bet_card(store, message.channel, str(message.guild.id)),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            try:
+                await message.author.send(
+                    view=setup_bet_card(store, message.channel, str(message.guild.id)),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.Forbidden:
+                return True
             return True
 
         if command == "resolve-bet":
@@ -757,6 +760,16 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
         if command in {"grant", "revoke", "perms"}:
             await _handle_permission_command(message, store, command, arguments)
             return True
+    except discord.Forbidden:
+        # A command can be read in a channel where the bot cannot send. Do not
+        # let the failed error reply escape into on_message as an exception.
+        try:
+            await message.author.send(
+                "機器人在目前頻道缺少發送訊息權限，請檢查頻道權限設定。"
+            )
+        except discord.HTTPException:
+            pass
+        return True
     finally:
         if silent:
             try:

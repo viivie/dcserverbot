@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import time
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -15,10 +17,16 @@ FUMAO_COIN = "<:FumaoCoin:1554060935725973554>"
 MAX_OPTIONS = 5
 MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 DURATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.IGNORECASE)
+UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 
 
 def _format_odds(value: float) -> str:
     return f"×{value:.2f}"
+
+
+def _format_deadline(timestamp_ms: int) -> str:
+    deadline = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).astimezone(UTC_PLUS_8)
+    return deadline.strftime("%Y-%m-%d %H:%M:%S UTC+8")
 
 
 def _parse_duration(value: str) -> int:
@@ -35,11 +43,11 @@ def _parse_duration(value: str) -> int:
 
 def _parse_options(value: str) -> list[tuple[str, float]]:
     options: list[tuple[str, float]] = []
-    for raw_option in re.split(r"[,\n\s]+", value.strip()):
+    for raw_option in re.split(r"[,\n]+", value.strip()):
         if not raw_option:
             continue
         if ":" not in raw_option and "：" not in raw_option:
-            raise ValueError("狀況格式應為 `狀況:倍率`，例如 `4抓:2.5`")
+            raise ValueError("狀況格式應為 `狀況:倍率`，多個狀況請用逗號分隔，例如 `aaa:2,bbb:2`")
         name, raw_odds = re.split(r"[:：]", raw_option, maxsplit=1)
         name = name.strip()
         if not name or name.casefold() == "return":
@@ -66,9 +74,10 @@ def _bet_embed(
     expires_at: int,
     *,
     resolved: str | None = None,
+    closed: bool = False,
 ) -> discord.Embed:
     if resolved is None:
-        status = "🟢 開放下注"
+        status = "⏹️ 已停止下注" if closed else "🟢 開放下注"
     elif resolved.casefold() == "return":
         status = "↩️ 已退款"
     else:
@@ -78,7 +87,7 @@ def _bet_embed(
         description=(
             f"{content}\n\n"
             f"{status}\n"
-            f"截止時間：<t:{expires_at // 1000}:F>"
+            f"截止時間：{_format_deadline(expires_at)}"
         ),
         color=0xE7A0B4 if resolved is None else 0x95A5A6,
     )
@@ -97,7 +106,7 @@ def _bet_embed(
 class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
     duration = discord.ui.TextInput(
         label="下注持續時間",
-        placeholder="例如：30m、2h、1d",
+        placeholder="例如：10s、30m、2h、1d",
         max_length=20,
     )
     title_input = discord.ui.TextInput(
@@ -111,7 +120,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
     )
     options_input = discord.ui.TextInput(
         label="狀況與倍率",
-        placeholder="例如：4抓:2.5 3抓:3.0 平局:4.0",
+        placeholder="例如：aaa:2,bbb:2",
         max_length=1000,
     )
 
@@ -145,6 +154,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             bet_view.message_id = str(message.id)
+            bet_view.message = message
             await self.store_create(
                 str(message.id),
                 created_at,
@@ -153,6 +163,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
                 content,
                 options,
             )
+            bet_view.schedule_expiry()
         except Exception:
             try:
                 await message.delete()
@@ -277,13 +288,50 @@ class BetOpenView(discord.ui.View):
         self.options = options
         self.expires_at = expires_at
         self.message_id: str | None = None
+        self.message: discord.Message | None = None
+        self.closed = False
+        self.expiry_task: asyncio.Task[None] | None = None
         for option_name, odds in options:
             button = discord.ui.Button(
-                label=f"{option_name} {_format_odds(odds)}",
+                label=option_name,
                 style=discord.ButtonStyle.primary,
             )
             button.callback = self._option_callback(option_name)
             self.add_item(button)
+
+    def schedule_expiry(self) -> None:
+        if self.expiry_task is None:
+            self.expiry_task = asyncio.create_task(self._close_when_expired())
+
+    async def _close_when_expired(self) -> None:
+        delay = max(0.0, (self.expires_at - int(time.time() * 1000)) / 1000)
+        await asyncio.sleep(delay)
+        await self.close()
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    view=v2_view_from_embed(
+                        _bet_embed(
+                            self.title,
+                            self.content,
+                            self.options,
+                            self.expires_at,
+                            closed=True,
+                        ),
+                        legacy_view=self,
+                    )
+                )
+            except discord.HTTPException:
+                pass
+        self.stop()
 
     def _option_callback(self, option_name: str):
         async def callback(interaction: discord.Interaction) -> None:
@@ -292,6 +340,7 @@ class BetOpenView(discord.ui.View):
                 return
             if int(time.time() * 1000) >= self.expires_at:
                 await interaction.response.send_message("這個賭盤已經截止下注。", ephemeral=True)
+                await self.close()
                 return
             await interaction.response.send_modal(
                 BetAmountModal(self.store, self.message_id, option_name)
