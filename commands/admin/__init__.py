@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
 
 from commands.master import get_active_view
+from .cleanup import DeleteConfirmView
+from .roles import GiveRoleConfirmView
+from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
 
 
 ADMIN_USER_ID = "1246096914634510417"
@@ -18,7 +22,7 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "id", "response"})
-OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms"})
+OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 
 COMMAND_INFO = {
@@ -30,6 +34,7 @@ COMMAND_INFO = {
     "give": ("要求使用者確認是否接受指定身分組。", "&give 身分組ID 人ID [備註]"),
     "id": ("取得被提及的使用者或身分組 ID。", "&id @使用者或 @身分組"),
     "response": ("回覆目前頻道中的指定訊息。", "&response 訊息ID 回覆內容"),
+    "sql": ("查詢或操作機器人的 SQLite 資料庫（原始管理員限定，預設私訊回傳）。", "&sql SQL語法（公開：&^sql SQL語法）"),
     "snipe": ("查看目前頻道最近被刪除的訊息，最多 10 則。", "&snipe [數量 1-10]"),
     "grant": ("授權某個使用者使用一個或多個指令。", "&grant 使用者ID 指令 [指令...]"),
     "revoke": ("撤銷某個使用者的一個或多個指令權限。", "&revoke 使用者ID 指令 [指令...]"),
@@ -42,34 +47,40 @@ def _canonical_command(command: str) -> str:
     return "snipe" if command in SNIPE_ALIASES else command
 
 
-def _parse_prefix(content: str) -> tuple[str, str, bool] | None:
+def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
     content = content.strip()
     if content.startswith("&!"):
         raw_body = content[2:]
         silent = True
+        public = False
+    elif content.startswith("&^"):
+        raw_body = content[2:]
+        silent = False
+        public = True
     elif content.startswith("&"):
         raw_body = content[1:]
         silent = False
+        public = False
     else:
         return None
 
     shorthand = not raw_body or raw_body[:1].isspace()
     body = raw_body.lstrip()
     if not body:
-        return "say", "", silent
+        return ("say", "", silent, public) if not public else None
 
     parts = body.split(maxsplit=1)
     command = _canonical_command(parts[0])
-    if command in COMMAND_INFO:
-        return command, parts[1] if len(parts) == 2 else "", silent
+    if command in COMMAND_INFO and (not public or command == "sql"):
+        return command, parts[1] if len(parts) == 2 else "", silent, public
 
     # Shorthand: & 文字 / &! 文字 are both equivalent to say.
-    return ("say", body, silent) if shorthand else None
+    return ("say", body, silent, public) if shorthand and not public else None
 
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "id", "response", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
             command for command in ("say", "button", "react", "snipe", "delete", "give", "id", "response")
@@ -96,193 +107,22 @@ def _has_permission(store: Any, user_id: str, command: str) -> bool:
     return store.has_prefix_command(user_id, command)
 
 
-class DeleteConfirmView(discord.ui.View):
-    def __init__(self, requester_id: int, channel: Any, count: int) -> None:
-        super().__init__(timeout=60)
-        self.requester_id = requester_id
-        self.channel = channel
-        self.count = count
-        self.message: discord.Message | None = None
-        self.resolved = False
-
-    async def _deny_other_user(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
-            return False
-        await interaction.response.send_message(
-            "這不是你發起的刪除確認喔😡",
-            ephemeral=True,
-        )
-        return True
-
-    @discord.ui.button(label="確認刪除", style=discord.ButtonStyle.danger)
-    async def confirm_callback(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if await self._deny_other_user(interaction):
-            return
-        if self.resolved:
-            await interaction.response.send_message("這個刪除請求已經處理過了。", ephemeral=True)
-            return
-
-        self.resolved = True
-        deleted_count = await self._delete_recent_messages()
-        embed = discord.Embed(
-            title="✅ 訊息刪除完成",
-            description=(
-                f"頻道：{getattr(self.channel, 'mention', self.channel)}\n"
-                f"已刪除 **{deleted_count}** 則訊息。"
-            ),
-            color=0x2ECC71,
-        )
-        await interaction.response.edit_message(embed=embed, view=None)
-        self.stop()
-
-    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
-    async def cancel_callback(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if await self._deny_other_user(interaction):
-            return
-        if self.resolved:
-            await interaction.response.send_message("這個刪除請求已經處理過了。", ephemeral=True)
-            return
-
-        self.resolved = True
-        embed = discord.Embed(
-            title="已取消刪除",
-            description=f"頻道：{getattr(self.channel, 'mention', self.channel)}",
-            color=0x95A5A6,
-        )
-        await interaction.response.edit_message(embed=embed, view=None)
-        self.stop()
-
-    async def on_timeout(self) -> None:
-        if self.resolved or self.message is None:
-            return
-        self.resolved = True
-        embed = discord.Embed(
-            title="刪除確認已過期",
-            description="請重新使用 `&delete 數量`。",
-            color=0x95A5A6,
-        )
-        try:
-            await self.message.edit(embed=embed, view=None)
-        except discord.HTTPException:
-            pass
-
-    async def _delete_recent_messages(self) -> int:
-        if self.message is None:
-            return 0
-
-        messages = []
-        async for candidate in self.channel.history(limit=self.count + 1):
-            if candidate.id == self.message.id:
-                continue
-            messages.append(candidate)
-            if len(messages) >= self.count:
-                break
-
-        if not messages:
-            return 0
-
-        try:
-            if len(messages) == 1:
-                await messages[0].delete()
-            else:
-                await self.channel.delete_messages(messages, reason="admin delete command")
-        except discord.HTTPException:
-            deleted_count = 0
-            for message in messages:
-                try:
-                    await message.delete()
-                    deleted_count += 1
-                except discord.HTTPException:
-                    pass
-            return deleted_count
-        return len(messages)
-
-
-class GiveRoleConfirmView(discord.ui.View):
-    def __init__(self, recipient: discord.Member, role: discord.Role) -> None:
-        super().__init__(timeout=None)
-        self.recipient = recipient
-        self.role = role
-        self.message: discord.Message | None = None
-        self.resolved = False
-
-    async def _deny_other_user(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.recipient.id:
-            return False
-        await interaction.response.send_message(
-            "這不是給你的身分組喔😡",
-            ephemeral=True,
-        )
-        return True
-
-    @discord.ui.button(label="接受給予", style=discord.ButtonStyle.success)
-    async def accept_callback(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if await self._deny_other_user(interaction):
-            return
-        if self.resolved:
-            await interaction.response.send_message("這個身分組請求已經處理過了。", ephemeral=True)
-            return
-
-        self.resolved = True
-        try:
-            await self.recipient.add_roles(
-                self.role,
-                reason="User accepted an admin role grant request",
+async def _send_sql_message(
+    message: discord.Message,
+    public: bool,
+    **kwargs: Any,
+) -> discord.Message | None:
+    destination = message.channel if public else message.author
+    try:
+        return await destination.send(**kwargs)
+    except discord.Forbidden:
+        if not public:
+            await message.channel.send(
+                "無法傳送 SQL 私訊，請先開啟接收伺服器成員私訊。",
+                allowed_mentions=discord.AllowedMentions.none(),
             )
-        except discord.Forbidden:
-            embed = discord.Embed(
-                title="❌ 身分組給予失敗",
-                description="機器人沒有管理這個身分組的權限，或身分組階級高於機器人。",
-                color=0xE74C3C,
-            )
-        except discord.HTTPException:
-            embed = discord.Embed(
-                title="❌ 身分組給予失敗",
-                description="Discord API 暫時無法完成這次操作。",
-                color=0xE74C3C,
-            )
-        else:
-            embed = discord.Embed(
-                title="✅ 已接受身分組",
-                description=f"{self.recipient.mention} 已接受 {self.role.mention}。",
-                color=0x2ECC71,
-            )
+        return None
 
-        await interaction.response.edit_message(embed=embed, view=None)
-        self.stop()
-
-    @discord.ui.button(label="拒絕", style=discord.ButtonStyle.danger)
-    async def reject_callback(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if await self._deny_other_user(interaction):
-            return
-        if self.resolved:
-            await interaction.response.send_message("這個身分組請求已經處理過了。", ephemeral=True)
-            return
-
-        self.resolved = True
-        embed = discord.Embed(
-            title="已拒絕身分組",
-            description=f"{self.recipient.mention} 拒絕接受 {self.role.mention}。",
-            color=0x95A5A6,
-        )
-        await interaction.response.edit_message(embed=embed, view=None)
-        self.stop()
 
 async def handle_admin_message(message: discord.Message, store: Any) -> bool:
     """Handle one permitted prefix command and return whether it was handled."""
@@ -293,7 +133,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
     if parsed is None:
         return False
 
-    command, arguments, silent = parsed
+    command, arguments, silent, public = parsed
     if command not in COMMAND_INFO:
         return False
 
@@ -375,6 +215,69 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                     "回覆訊息時發生錯誤。",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+            return True
+
+        if command == "sql":
+            statement = arguments.strip()
+            if not statement:
+                await _send_sql_message(
+                    message,
+                    public,
+                    content="用法：&sql SQL語法",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            if len(statement) > 3000:
+                await _send_sql_message(
+                    message,
+                    public,
+                    content="SQL 語法不能超過 3000 個字元。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            if is_read_only_sql(statement):
+                try:
+                    result = await _run_in_thread(store.execute_sql, statement)
+                    await _send_sql_message(
+                        message,
+                        public,
+                        embed=sql_result_embed(result),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except sqlite3.Error as error:
+                    await _send_sql_message(
+                        message,
+                        public,
+                        embed=discord.Embed(
+                            title="❌ SQL 查詢失敗",
+                            description=str(error)[:4000],
+                            color=0xE74C3C,
+                        ),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                return True
+
+            preview = statement.replace("```", "` ` `")
+            embed = discord.Embed(
+                title="⚠️ 確認資料庫操作",
+                description=(
+                    "這個 SQL 可能會修改或刪除資料庫內容。\n"
+                    "按下「確認執行」後才會執行，請先確認語法與影響範圍。"
+                ),
+                color=0xE74C3C,
+            )
+            embed.add_field(name="資料庫", value="`data/database.db`", inline=False)
+            embed.add_field(name="SQL", value=f"```sql\n{preview}\n```", inline=False)
+            view = SqlConfirmView(message.author.id, store, statement)
+            confirmation = await _send_sql_message(
+                message,
+                public,
+                embed=embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            view.message = confirmation
             return True
 
         if command == "button":

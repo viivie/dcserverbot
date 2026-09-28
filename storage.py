@@ -370,3 +370,22 @@ class WorshipStore:
                     }
                 )
             return result
+
+    def execute_sql(self, statement: str) -> dict[str, Any]:
+        """Execute one administrator-approved SQL statement."""
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(statement)
+            if cursor.description:
+                columns = [str(column[0]) for column in cursor.description]
+                rows = cursor.fetchmany(50)
+                return {
+                    "type": "rows",
+                    "columns": columns,
+                    "rows": [tuple(row) for row in rows],
+                    "has_more": cursor.fetchone() is not None,
+                }
+            return {
+                "type": "affected",
+                "rowcount": cursor.rowcount,
+                "lastrowid": cursor.lastrowid,
+            }
