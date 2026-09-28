@@ -22,9 +22,22 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "id", "response"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
+CURRENCY_ALIASES = {
+    "fumao": "fumao_coins",
+    "fumaocoin": "fumao_coins",
+    "fumao_coin": "fumao_coins",
+    "芙帽幣": "fumao_coins",
+    "芙帽币": "fumao_coins",
+    "coin": "fumao_coins",
+    "crystal": "crystals",
+    "crystals": "crystals",
+    "水晶": "crystals",
+    "grace": "grace",
+    "神恩": "grace",
+}
 
 COMMAND_INFO = {
     "help": ("查看自己可以使用的管理員指令（以私人訊息傳送）。", "&help"),
@@ -33,8 +46,12 @@ COMMAND_INFO = {
     "react": ("讓機器人對指定訊息加上一個或多個反應。", "&react 訊息ID 表情 [表情...]"),
     "delete": ("刪除目前頻道最近的指定數量訊息。", "&delete 數量（最多 100）"),
     "give": (
+        "直接發放芙帽幣、水晶或神恩給指定使用者。",
+        "&give 使用者ID 貨幣種類 數量",
+    ),
+    "give_role": (
         "給予一個或多個身分組；一般模式需要對方同意，force 模式直接給予。",
-        "&give 身分組ID[,身分組ID...] 人ID [備註]（強制：&give force 身分組ID[,身分組ID...] 人ID [備註]）",
+        "&give_Role 身分組ID[,身分組ID...] 人ID [備註]（強制：&give_Role force 身分組ID[,身分組ID...] 人ID [備註]）",
     ),
     "id": ("取得被提及的使用者或身分組 ID。", "&id @使用者或 @身分組"),
     "response": ("回覆目前頻道中的指定訊息。", "&response 訊息ID 回覆內容"),
@@ -84,17 +101,18 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give", "id", "response")
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "id", "response")
             if store.has_prefix_command(user_id, command)
         ]
 
     lines = ["管理員指令列表", ""]
     for command in commands:
         description, syntax = COMMAND_INFO[command]
-        lines.extend((f"&{command}", description, f"語法：{syntax}", ""))
+        display_command = "give_Role" if command == "give_role" else command
+        lines.extend((f"&{display_command}", description, f"語法：{syntax}", ""))
 
     if not is_owner:
         lines.extend(("可用的按鈕編號：1 = 接受，2 = 拒絕", ""))
@@ -159,6 +177,10 @@ def _parse_give_arguments(
         leading_ids[-1],
         note,
     )
+
+
+def _currency_name(value: str) -> str | None:
+    return CURRENCY_ALIASES.get(value.strip().casefold())
 
 
 async def _send_sql_message(
@@ -412,10 +434,74 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             return True
 
         if command == "give":
+            values = arguments.split()
+            if len(values) != 3 or not ID_PATTERN.fullmatch(values[0]):
+                await message.channel.send("用法：&give 使用者ID 貨幣種類 數量")
+                return True
+
+            currency = _currency_name(values[1])
+            if currency is None:
+                await message.channel.send(
+                    "貨幣種類只能是 FumaoCoin、Crystal 或 grace。"
+                )
+                return True
+            try:
+                amount = int(values[2].replace(",", ""))
+            except ValueError:
+                amount = 0
+            if amount < 1 or amount > 9_000_000_000_000_000_000:
+                await message.channel.send("發放數量必須介於 1 到 9,000,000,000,000,000,000。")
+                return True
+
+            try:
+                account = await _run_in_thread(
+                    store.grant_economy_currency,
+                    values[0],
+                    currency,
+                    amount,
+                )
+            except (OverflowError, ValueError):
+                await message.channel.send("發放貨幣失敗，請確認貨幣種類與數量。")
+                return True
+
+            labels = {
+                "fumao_coins": ("芙帽幣", "FumaoCoin"),
+                "crystals": ("水晶", "Crystal"),
+                "grace": ("神恩", "grace"),
+            }
+            currency_label, emoji_name = labels[currency]
+            emoji = next(
+                (
+                    str(emoji)
+                    for emoji in getattr(getattr(message, "guild", None), "emojis", ())
+                    if emoji.name == emoji_name
+                ),
+                f":{emoji_name}:",
+            )
+            embed = discord.Embed(
+                title="✅ 貨幣發放完成",
+                description=(
+                    f"已給予 <@{values[0]}> **{amount:,}** {currency_label} {emoji}\n"
+                    f"目前餘額：**{account[currency]:,}** {currency_label} {emoji}"
+                ),
+                color=0x2ECC71,
+            )
+            await message.channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                ),
+            )
+            return True
+
+        if command == "give_role":
             parsed_give = _parse_give_arguments(arguments)
             if parsed_give is None:
                 await message.channel.send(
-                    "用法：&give 身分組ID[,身分組ID...] 人ID [備註]"
+                    "用法：&give_Role 身分組ID[,身分組ID...] 人ID [備註]"
                 )
                 return True
 
@@ -627,7 +713,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&id、&response"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&id、&response"
         )
         return
 

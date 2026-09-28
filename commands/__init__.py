@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 
 def register_all(tree, discord, app_commands, context: CommandContext) -> None:
+    from commands.economy import register_economy
     from commands.master import register_master
     from commands.ritual import register_ritual
     from commands.worship_someone import register_worship_someone
@@ -17,4 +18,5 @@ def register_all(tree, discord, app_commands, context: CommandContext) -> None:
     register_worship(tree, discord, app_commands, context)
     register_worship_someone(tree, discord, app_commands, context)
     register_master(tree, discord, app_commands, context)
+    register_economy(tree, discord, app_commands, context)
     register_ritual(tree, discord, app_commands, context)
