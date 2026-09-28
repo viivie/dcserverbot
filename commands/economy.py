@@ -508,7 +508,7 @@ def register_economy(
         else:
             await interaction.response.send_message(embed=embed, view=view)
 
-    @economy.command(name="搶芙帽教聖殿", description="嘗試搶劫芙帽教聖殿，成功率 10%")
+    @economy.command(name="搶芙帽教聖殿", description="嘗試搶劫芙帽教聖殿")
     @app_commands.guild_only()
     async def rob_fumao_temple(interaction: Any) -> None:
         now_monotonic = time.monotonic()
