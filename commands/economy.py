@@ -19,6 +19,11 @@ TAIPEI = timezone(timedelta(hours=8), name="UTC+8")
 EMBED_COLOR = 0xE7A0B4
 BASE_REWARD_MIN = 100
 BASE_REWARD_MAX = 200
+CURRENCY_EMOJIS = {
+    "FumaoCoin": "<:FumaoCoin:1554060935725973554>",
+    "Crystal": "<:Crystal:1554060934140403815>",
+    "grace": "<:grace:1554060937244180542>",
+}
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,8 @@ def _multiplier(value: float) -> str:
 
 
 def _currency_emoji(guild: discord.Guild | None, name: str) -> str:
+    if name in CURRENCY_EMOJIS:
+        return CURRENCY_EMOJIS[name]
     if guild is not None:
         for emoji in guild.emojis:
             if emoji.name == name:
@@ -342,7 +349,7 @@ def _attach_upgrade_view(
     embed: Any,
     account: dict[str, Any],
 ) -> UpgradeView | None:
-    if not can_upgrade(account):
+    if next_level(account) is None:
         return None
     return UpgradeView(context, interaction.user.id, interaction.guild, embed)
 

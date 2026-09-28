@@ -10,6 +10,7 @@ from typing import Any
 import discord
 
 from commands.master import get_active_view, register_active_view
+from commands.economy import CURRENCY_EMOJIS
 from .cleanup import DeleteConfirmView
 from .roles import GiveRoleConfirmView
 from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
@@ -470,14 +471,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 "grace": ("神恩", "grace"),
             }
             currency_label, emoji_name = labels[currency]
-            emoji = next(
-                (
-                    str(emoji)
-                    for emoji in getattr(getattr(message, "guild", None), "emojis", ())
-                    if emoji.name == emoji_name
-                ),
-                f":{emoji_name}:",
-            )
+            emoji = CURRENCY_EMOJIS.get(emoji_name, f":{emoji_name}:")
             embed = discord.Embed(
                 title="✅ 貨幣發放完成",
                 description=(
