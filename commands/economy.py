@@ -32,7 +32,8 @@ CURRENCY_EMOJIS = {
     "Crystal": "<:Crystal:1554060934140403815>",
     "grace": "<:grace:1554060937244180542>",
 }
-CHECKIN_TITLE_EMOJI = "<:mura_excited:1429257164811407571>"
+DAILY_CHECKIN_TITLE_EMOJI = "📅"
+HOURLY_CHECKIN_TITLE_EMOJI = "⏰"
 ROBBERY_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "economy"
 
 
@@ -232,8 +233,8 @@ def _upgrade_embed(
         name="升級後效益",
         value=(
             f"保存小時數：{current.saved_hours}h ➜ **{target.saved_hours}h**\n"
-            f"每小時倍率：{_multiplier(current.hourly_multiplier)} ➜ **{_multiplier(target.hourly_multiplier)}**\n"
-            f"每日倍率：{_multiplier(current.daily_multiplier)} ➜ **{_multiplier(target.daily_multiplier)}**"
+            f"每小時簽到倍率：{_multiplier(current.hourly_multiplier)} ➜ **{_multiplier(target.hourly_multiplier)}**\n"
+            f"每日簽到倍率：{_multiplier(current.daily_multiplier)} ➜ **{_multiplier(target.daily_multiplier)}**"
         ),
         inline=False,
     )
@@ -269,17 +270,20 @@ def _checkin_sections(
         accumulated_reward = base_reward * accumulated
         calculation_lines = [
             f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 芙帽幣",
-            f"每小時倍率　　　　{_multiplier(multiplier)}",
+            f"每小時簽到倍率　　{_multiplier(multiplier)}",
         ]
     else:
-        calculation_lines = [f"每日倍率　　　　{_multiplier(multiplier)}"]
+        calculation_lines = [f"每日簽到倍率　　　{_multiplier(multiplier)}"]
 
     balance = (
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
         f"簽到等級：Lv.{account['level']}"
     )
     return [
-        f"## {CHECKIN_TITLE_EMOJI} **{'每小時' if kind == 'hourly' else '每日'}簽到成功**",
+        (
+            f"## {HOURLY_CHECKIN_TITLE_EMOJI if kind == 'hourly' else DAILY_CHECKIN_TITLE_EMOJI} "
+            f"**{'每小時' if kind == 'hourly' else '每日'}簽到成功**"
+        ),
         f"獲得 **{_number(reward)}** {coin} 芙帽幣\n\n" + "\n".join(calculation_lines),
         f"合計　　　　　　　**{_number(reward)}** {coin} 芙帽幣",
         f"{balance}\n\nUTC+8",
@@ -331,7 +335,7 @@ def _quick_checkin_sections(
     if daily.get("claimed"):
         daily_value = (
             f"獲得 **{_number(daily['reward'])}** {coin} 芙帽幣\n"
-            f"每日倍率　　　　{_multiplier(float(daily['multiplier']))}\n"
+            f"每日簽到倍率　　　{_multiplier(float(daily['multiplier']))}\n"
             f"合計　　　　　　　**{_number(daily['reward'])}** {coin} 芙帽幣"
         )
         daily_name = "每日簽到　成功"
@@ -344,7 +348,7 @@ def _quick_checkin_sections(
         hourly_value = (
             f"獲得 **{_number(hourly['reward'])}** {coin} 芙帽幣\n"
             f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 芙帽幣\n"
-            f"每小時倍率　　　　{_multiplier(float(hourly['multiplier']))}\n"
+            f"每小時簽到倍率　　{_multiplier(float(hourly['multiplier']))}\n"
             f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 芙帽幣"
         )
         hourly_name = "每小時簽到　成功"
@@ -575,8 +579,8 @@ class UpgradeView(discord.ui.View):
                 title=f"✅ 簽到等級升級成功：Lv.{result['level']}",
                 description=(
                     f"保存小時數：{level_data(target.level - 1).saved_hours}h ➜ **{target.saved_hours}h**\n"
-                    f"每小時倍率：{_multiplier(level_data(target.level - 1).hourly_multiplier)} ➜ **{_multiplier(target.hourly_multiplier)}**\n"
-                    f"每日倍率：{_multiplier(level_data(target.level - 1).daily_multiplier)} ➜ **{_multiplier(target.daily_multiplier)}**\n\n"
+                    f"每小時簽到倍率：{_multiplier(level_data(target.level - 1).hourly_multiplier)} ➜ **{_multiplier(target.hourly_multiplier)}**\n"
+                    f"每日簽到倍率：{_multiplier(level_data(target.level - 1).daily_multiplier)} ➜ **{_multiplier(target.daily_multiplier)}**\n\n"
                     f"{_balance_line(result, self.guild)}"
                 ),
                 color=0x2ECC71,
