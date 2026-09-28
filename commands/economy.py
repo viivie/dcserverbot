@@ -47,9 +47,8 @@ class EconomyLevel:
     daily_multiplier: float
 
 
-# Values are copied from 芙帽教簽到等級系統換算表.xlsx. The sheet labels
-# levels 21-30 as 8-17 days, so those saved-hour values are represented as
-# 192-408 hours even though the displayed text in the sheet starts with 168.
+# Values are copied from 芙帽教簽到等級系統換算表.xlsx. The saved-hour
+# capacity is capped at 168 hours for every level from Lv.15 onward.
 LEVELS = (
     EconomyLevel(1, 0, 0, 1, 1.00, 1.00),
     EconomyLevel(2, 1_000, 0, 2, 1.02, 1.01),
@@ -71,16 +70,16 @@ LEVELS = (
     EconomyLevel(18, 63_000_000, 170, 168, 99.26, 50.13),
     EconomyLevel(19, 180_000_000, 190, 168, 117.64, 59.32),
     EconomyLevel(20, 530_000_000, 220, 168, 138.18, 69.59),
-    EconomyLevel(21, 1_600_000_000, 250, 192, 161.00, 81.00),
-    EconomyLevel(22, 5_100_000_000, 290, 216, 186.22, 93.61),
-    EconomyLevel(23, 17_000_000_000, 330, 240, 213.96, 107.48),
-    EconomyLevel(24, 55_000_000_000, 360, 264, 244.34, 122.67),
-    EconomyLevel(25, 190_000_000_000, 410, 288, 277.48, 139.24),
-    EconomyLevel(26, 660_000_000_000, 450, 312, 313.50, 157.25),
-    EconomyLevel(27, 2_400_000_000_000, 500, 336, 352.52, 176.76),
-    EconomyLevel(28, 8_800_000_000_000, 540, 360, 394.66, 197.83),
-    EconomyLevel(29, 33_000_000_000_000, 590, 384, 440.04, 220.52),
-    EconomyLevel(30, 130_000_000_000_000, 650, 408, 488.78, 244.89),
+    EconomyLevel(21, 1_600_000_000, 250, 168, 161.00, 81.00),
+    EconomyLevel(22, 5_100_000_000, 290, 168, 186.22, 93.61),
+    EconomyLevel(23, 17_000_000_000, 330, 168, 213.96, 107.48),
+    EconomyLevel(24, 55_000_000_000, 360, 168, 244.34, 122.67),
+    EconomyLevel(25, 190_000_000_000, 410, 168, 277.48, 139.24),
+    EconomyLevel(26, 660_000_000_000, 450, 168, 313.50, 157.25),
+    EconomyLevel(27, 2_400_000_000_000, 500, 168, 352.52, 176.76),
+    EconomyLevel(28, 8_800_000_000_000, 540, 168, 394.66, 197.83),
+    EconomyLevel(29, 33_000_000_000_000, 590, 168, 440.04, 220.52),
+    EconomyLevel(30, 130_000_000_000_000, 650, 168, 488.78, 244.89),
 )
 
 
