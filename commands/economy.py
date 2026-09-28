@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
@@ -99,15 +100,31 @@ def _multiplier(value: float) -> str:
     return f"×{value:.2f}"
 
 
-def _checkin_separator(base_reward: int, reward: int, accumulated_hours: int | None = None) -> str:
-    labels = [
-        f"獲得 {base_reward:,} 芙帽幣",
-        f"合計 {reward:,} 芙帽幣",
-    ]
-    if accumulated_hours is not None:
-        labels.append(f"累積 {accumulated_hours} 小時獎勵 × {accumulated_hours}")
-    width = max(len(label) for label in labels) + 4
-    return "─" * max(18, min(40, width))
+def _display_width(value: str) -> int:
+    return sum(
+        2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+        for character in value
+    )
+
+
+def _checkin_calculation_block(rows: list[tuple[str, str]]) -> str:
+    label_width = max(_display_width(label) for label, _ in rows)
+    value_width = max(_display_width(value) for _, value in rows)
+    width = max(22, min(40, label_width + value_width + 1))
+    formatted_rows = []
+    for label, value in rows:
+        label_padding = " " * (label_width - _display_width(label))
+        value_padding = " " * (value_width - _display_width(value))
+        middle_padding = " " * (width - label_width - value_width - 1)
+        formatted_rows.append(
+            f"{label}{label_padding}{middle_padding}{value_padding}{value}"
+        )
+    return "```text\n" + "\n".join(
+        [
+            *formatted_rows,
+            "─" * width,
+        ]
+    ) + "\n```"
 
 
 def _currency_emoji(guild: discord.Guild | None, name: str) -> str:
@@ -231,15 +248,15 @@ def _checkin_embed(
     lines = [f"獲得 **{_number(base_reward)}** {coin} 芙帽幣", ""]
     if kind == "hourly":
         accumulated = int(account["accumulated_hours"])
-        lines.append(f"累積 {accumulated} 小時獎勵　　　× {accumulated}")
-        lines.append(f"每小時倍率　　　　　　{_multiplier(multiplier)}")
-        separator = _checkin_separator(base_reward, reward, accumulated)
+        calculation_rows = [
+            (f"累積 {accumulated} 小時獎勵", f"× {accumulated}"),
+            ("每小時倍率", _multiplier(multiplier)),
+        ]
     else:
-        lines.append(f"每日倍率　　　　　　　{_multiplier(multiplier)}")
-        separator = _checkin_separator(base_reward, reward)
+        calculation_rows = [("每日倍率", _multiplier(multiplier))]
     lines.extend(
         [
-            separator,
+            _checkin_calculation_block(calculation_rows),
             f"合計　　　　　　　　　**{_number(reward)}** {coin} 芙帽幣",
             "",
             _balance_line(account, guild),
