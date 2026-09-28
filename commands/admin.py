@@ -14,8 +14,10 @@ from commands.master import get_active_view
 ADMIN_USER_ID = "1246096914634510417"
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 ID_PATTERN = re.compile(r"^\d{17,20}$")
+USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
+ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "id", "response"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 
@@ -26,6 +28,8 @@ COMMAND_INFO = {
     "react": ("讓機器人對指定訊息加上一個或多個反應。", "&react 訊息ID 表情 [表情...]"),
     "delete": ("刪除目前頻道最近的指定數量訊息。", "&delete 數量（最多 100）"),
     "give": ("要求使用者確認是否接受指定身分組。", "&give 身分組ID 人ID [備註]"),
+    "id": ("取得被提及的使用者或身分組 ID。", "&id @使用者或 @身分組"),
+    "response": ("回覆目前頻道中的指定訊息。", "&response 訊息ID 回覆內容"),
     "snipe": ("查看目前頻道最近被刪除的訊息，最多 10 則。", "&snipe [數量 1-10]"),
     "grant": ("授權某個使用者使用一個或多個指令。", "&grant 使用者ID 指令 [指令...]"),
     "revoke": ("撤銷某個使用者的一個或多個指令權限。", "&revoke 使用者ID 指令 [指令...]"),
@@ -65,10 +69,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "id", "response", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give")
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "id", "response")
             if store.has_prefix_command(user_id, command)
         ]
 
@@ -314,6 +318,65 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             )
             return True
 
+        if command == "id":
+            argument = arguments.strip()
+            role_match = ROLE_MENTION_PATTERN.fullmatch(argument)
+            user_match = USER_MENTION_PATTERN.fullmatch(argument)
+            if role_match:
+                target_type = "身分組"
+                target_id = role_match.group(1)
+            elif user_match:
+                target_type = "使用者"
+                target_id = user_match.group(1)
+            else:
+                await message.channel.send(
+                    "用法：&id @使用者 或 &id @身分組",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            await message.channel.send(
+                f"{target_type} ID：`{target_id}`",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
+        if command == "response":
+            values = arguments.split(maxsplit=1)
+            if (
+                len(values) < 2
+                or not ID_PATTERN.fullmatch(values[0])
+                or not values[1].strip()
+            ):
+                await message.channel.send(
+                    "用法：&response 訊息ID 回覆內容",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            try:
+                target_message = await message.channel.fetch_message(int(values[0]))
+                await target_message.reply(
+                    values[1].strip(),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.NotFound:
+                await message.channel.send(
+                    "找不到指定的訊息。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.Forbidden:
+                await message.channel.send(
+                    "機器人沒有讀取或回覆這則訊息的權限。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                await message.channel.send(
+                    "回覆訊息時發生錯誤。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            return True
+
         if command == "button":
             match = BUTTON_PATTERN.fullmatch(arguments)
             if not match:
@@ -557,7 +620,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&id、&response"
         )
         return
 

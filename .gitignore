@@ -5,6 +5,4 @@ __pycache__/
 
 # Runtime data must stay local and must not be committed.
 data/*
-database.db
-database.db-*
 credentials/*.json

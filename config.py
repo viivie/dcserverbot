@@ -68,7 +68,7 @@ class Config:
             bot_token=first_environment_value("DISCORD_BOT_TOKEN", "DISCORD_TOKEN", "BOT_TOKEN", "TOKEN")
             .removeprefix("Bot ")
             .strip(),
-            data_file=str(BOT_DIR / "database.db"),
+            data_file=str(BOT_DIR / "data" / "database.db"),
             google_drive_client_file=str(client_file),
             google_drive_token_file=os.getenv(
                 "GOOGLE_DRIVE_OAUTH_TOKEN_FILE",

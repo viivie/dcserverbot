@@ -21,7 +21,7 @@ class WorshipStore:
 
     @staticmethod
     def _resolve_path(data_file: str) -> Path:
-        raw = (data_file or "database.db").strip()
+        raw = (data_file or "data/database.db").strip()
         if raw.startswith("sqlite:///"):
             raw = raw.removeprefix("sqlite:///")
 

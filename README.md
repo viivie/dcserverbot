@@ -12,7 +12,7 @@ cp .env.example .env
 python bot.py gateway
 ```
 
-資料會存在專案根目錄的 `database.db`。程式不再讀取舊的 JSON 資料檔。
+資料會存在 `data/database.db`。程式不再讀取舊的 JSON 資料檔。
 
 若要備份到 Google Drive，請把 OAuth Client JSON 放到
 `credentials/google_drives.json`（或用 `GOOGLE_DRIVE_OAUTH_CLIENT_FILE` 指定其他路徑），
