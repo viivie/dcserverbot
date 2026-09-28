@@ -516,7 +516,7 @@ async def handle_quick_checkin(message: discord.Message, context: CommandContext
             context,
             message.author,
             _quick_checkin_sections(message.guild, daily, hourly, current_account),
-            show_upgrade_button=False,
+            show_upgrade_button=True,
         ),
         allowed_mentions=discord.AllowedMentions.none(),
     )

@@ -14,7 +14,13 @@ from commands.master import get_active_view, register_active_view
 from commands.economy import CURRENCY_EMOJIS
 from .cleanup import DeleteConfirmView
 from .economy import money_log_view
-from .bets import resolve_bet_message, setup_bet_card, stop_bet_message
+from .bets import (
+    get_bet_template,
+    resolve_bet_message,
+    setup_bet_card,
+    start_bet_message,
+    stop_bet_message,
+)
 from .roles import GiveRoleConfirmView
 from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
 
@@ -26,10 +32,11 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "stop-bet", "resolve-bet", "log"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "prohibit", "start-bet", "stop-bet", "resolve-bet", "log"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 MONEY_LOG_ALIASES = frozenset({"log", "money-log", "moneylog"})
+STOP_BET_ALIASES = frozenset({"stop", "stop-bet"})
 CURRENCY_ALIASES = {
     "fumao": "fumao_coins",
     "fumaocoin": "fumao_coins",
@@ -54,8 +61,12 @@ COMMAND_INFO = {
         "&give 使用者ID 貨幣種類 數量（全部：&give all 貨幣種類 數量）",
     ),
     "create-bet": (
-        "以私人表單建立芙帽幣賭盤。",
-        "&create-bet（按按鈕後填寫表單）",
+        "以私人表單建立賭盤，可套用模板並選擇是否立即開放下注。",
+        "&create-bet [模板編號] [需要之後 start-bet 的任意文字]",
+    ),
+    "prohibit": (
+        "禁止指定使用者下注賭盤中的指定選項。",
+        "&prohibit 賭盤訊息ID @使用者... 選項[,選項...]",
     ),
     "resolve-bet": (
         "結算賭盤；可同時指定多個結果，使用 return 會退還所有押注。",
@@ -63,7 +74,11 @@ COMMAND_INFO = {
     ),
     "stop-bet": (
         "立即停止賭盤下注並停用原卡片上的所有下注按鈕。",
-        "&stop-bet 訊息ID",
+        "&stop 訊息ID（或 &stop-bet 訊息ID）",
+    ),
+    "start-bet": (
+        "開放尚未開始下注的賭盤。",
+        "&start-bet 訊息ID",
     ),
     "log": (
         "查看某人最近 3 天的貨幣變動紀錄。",
@@ -89,6 +104,8 @@ def _canonical_command(command: str) -> str:
         return "snipe"
     if command in MONEY_LOG_ALIASES:
         return "log"
+    if command in STOP_BET_ALIASES:
+        return "stop-bet"
     return command
 
 
@@ -125,10 +142,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "log", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "prohibit", "start-bet", "stop-bet", "resolve-bet", "log", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "log", "id", "response")
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "prohibit", "start-bet", "stop-bet", "resolve-bet", "log", "id", "response")
             if (
                 store.has_prefix_command(user_id, command)
                 or command == "log"
@@ -213,6 +230,34 @@ def _parse_give_arguments(
 
 def _currency_name(value: str) -> str | None:
     return CURRENCY_ALIASES.get(value.strip().casefold())
+
+
+def _parse_prohibit_arguments(
+    arguments: str,
+) -> tuple[str, list[str], list[str]] | None:
+    values = arguments.split()
+    if len(values) < 3 or not ID_PATTERN.fullmatch(values[0]):
+        return None
+
+    user_ids: list[str] = []
+    index = 1
+    while index < len(values):
+        match = USER_MENTION_PATTERN.fullmatch(values[index])
+        if match is None:
+            break
+        user_ids.append(match.group(1))
+        index += 1
+
+    if not user_ids or index >= len(values):
+        return None
+    option_names = [
+        option.strip()
+        for option in re.split(r"[,，]+", " ".join(values[index:]))
+        if option.strip()
+    ]
+    if not option_names:
+        return None
+    return values[0], list(dict.fromkeys(user_ids)), list(dict.fromkeys(option_names))
 
 
 async def _send_sql_message(
@@ -329,8 +374,100 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             if message.guild is None:
                 await message.author.send("賭盤只能在伺服器頻道建立。")
                 return True
+            values = arguments.split()
+            template_id = None
+            start_immediately = None
+            if values:
+                if not values[0].isdigit() or get_bet_template(int(values[0])) is None:
+                    await message.channel.send(
+                        "模板編號不存在。可用模板：1、2、3。",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    return True
+                template_id = int(values[0])
+            if len(values) > 2:
+                await message.channel.send(
+                    "用法：&create-bet [模板編號] [需要之後 start-bet 的任意文字]。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            if len(values) == 2:
+                start_immediately = False
             await message.channel.send(
-                view=setup_bet_card(store, message.channel, str(message.guild.id)),
+                view=setup_bet_card(
+                    store,
+                    message.channel,
+                    str(message.guild.id),
+                    template_id,
+                    start_immediately,
+                ),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
+        if command == "prohibit":
+            parsed_prohibit = _parse_prohibit_arguments(arguments)
+            if parsed_prohibit is None:
+                await message.channel.send(
+                    "用法：&prohibit 賭盤訊息ID @使用者... 選項[,選項...]",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            bet_message_id, user_ids, option_names = parsed_prohibit
+            try:
+                added_count = await _run_in_thread(
+                    store.prohibit_bet_options,
+                    bet_message_id,
+                    user_ids,
+                    option_names,
+                )
+            except ValueError as error:
+                await message.channel.send(
+                    str(error),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            embed = discord.Embed(
+                title="🚫 賭盤下注限制已設定",
+                description=(
+                    f"賭盤訊息：`{bet_message_id}`\n"
+                    f"使用者：{'、'.join(f'<@{user_id}>' for user_id in user_ids)}\n"
+                    f"禁止選項：{'、'.join(option_names)}\n"
+                    f"新增限制：**{added_count}** 項"
+                ),
+                color=0xE74C3C,
+            )
+            await message.channel.send(
+                view=v2_view_from_embed(embed),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                ),
+            )
+            return True
+
+        if command == "start-bet":
+            message_id = arguments.strip()
+            if not ID_PATTERN.fullmatch(message_id):
+                await message.channel.send(
+                    "用法：&start-bet 訊息ID",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            try:
+                result_embed = await start_bet_message(message, store, message_id)
+            except ValueError as error:
+                await message.channel.send(
+                    str(error),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            result_embed.title = "▶️ 賭盤已開放下注"
+            await message.channel.send(
+                view=v2_view_from_embed(result_embed),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return True
@@ -339,7 +476,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             message_id = arguments.strip()
             if not ID_PATTERN.fullmatch(message_id):
                 await message.channel.send(
-                    "用法：&stop-bet 訊息ID",
+                    "用法：&stop 訊息ID（或 &stop-bet 訊息ID）",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
                 return True
@@ -856,7 +993,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&stop-bet、&resolve-bet、&log、&id、&response"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&prohibit、&stop、&resolve-bet、&log、&id、&response"
         )
         return
 

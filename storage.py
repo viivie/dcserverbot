@@ -85,6 +85,7 @@ class WorshipStore:
                     content TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL,
+                    started_at INTEGER,
                     currency TEXT NOT NULL DEFAULT 'fumao_coins',
                     resolved_outcome TEXT,
                     closed_at INTEGER
@@ -103,8 +104,17 @@ class WorshipStore:
                     bet_message_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     option_name TEXT NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'fumao_coins',
                     amount INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
+                    PRIMARY KEY (bet_message_id, user_id, option_name, currency),
+                    FOREIGN KEY (bet_message_id) REFERENCES bets(message_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS bet_prohibitions (
+                    bet_message_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    option_name TEXT NOT NULL,
                     PRIMARY KEY (bet_message_id, user_id, option_name),
                     FOREIGN KEY (bet_message_id) REFERENCES bets(message_id)
                 );
@@ -159,6 +169,63 @@ class WorshipStore:
                 connection.execute(
                     "ALTER TABLE bets ADD COLUMN currency TEXT NOT NULL DEFAULT 'fumao_coins'"
                 )
+            if "started_at" not in bet_columns:
+                connection.execute(
+                    "ALTER TABLE bets ADD COLUMN started_at INTEGER"
+                )
+                connection.execute(
+                    "UPDATE bets SET started_at = created_at WHERE started_at IS NULL"
+                )
+            bet_entry_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(bet_entries)")
+            }
+            if "currency" not in bet_entry_columns:
+                connection.execute(
+                    "ALTER TABLE bet_entries ADD COLUMN currency TEXT NOT NULL DEFAULT 'fumao_coins'"
+                )
+            bet_entry_primary_key = [
+                row[1]
+                for row in sorted(
+                    connection.execute("PRAGMA table_info(bet_entries)").fetchall(),
+                    key=lambda row: row[5],
+                )
+                if row[5]
+            ]
+            expected_bet_entry_primary_key = [
+                "bet_message_id",
+                "user_id",
+                "option_name",
+                "currency",
+            ]
+            if bet_entry_primary_key != expected_bet_entry_primary_key:
+                connection.execute("ALTER TABLE bet_entries RENAME TO bet_entries_legacy")
+                connection.execute(
+                    """
+                    CREATE TABLE bet_entries (
+                        bet_message_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        option_name TEXT NOT NULL,
+                        currency TEXT NOT NULL DEFAULT 'fumao_coins',
+                        amount INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (bet_message_id, user_id, option_name, currency),
+                        FOREIGN KEY (bet_message_id) REFERENCES bets(message_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO bet_entries(
+                        bet_message_id, user_id, option_name, currency,
+                        amount, created_at
+                    )
+                    SELECT bet_message_id, user_id, option_name, currency,
+                           amount, created_at
+                    FROM bet_entries_legacy
+                    """
+                )
+                connection.execute("DROP TABLE bet_entries_legacy")
             migration = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'give_role_permission_migrated'"
             ).fetchone()
@@ -571,7 +638,7 @@ class WorshipStore:
         content: str,
         created_at: int,
         expires_at: int,
-        currency: str,
+        started_at: int | None,
         options: list[tuple[str, float]],
     ) -> None:
         with self.lock, self._connect() as connection:
@@ -579,8 +646,8 @@ class WorshipStore:
                 """
                 INSERT INTO bets(
                     message_id, guild_id, channel_id, title, content,
-                    created_at, expires_at, currency
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, expires_at, started_at, currency
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(message_id),
@@ -590,7 +657,8 @@ class WorshipStore:
                     content,
                     int(created_at),
                     int(expires_at),
-                    currency,
+                    int(started_at) if started_at is not None else None,
+                    "multi",
                 ),
             )
             connection.executemany(
@@ -609,7 +677,8 @@ class WorshipStore:
             bet = connection.execute(
                 """
                 SELECT message_id, guild_id, channel_id, title, content,
-                       created_at, expires_at, currency, resolved_outcome, closed_at
+                       created_at, expires_at, started_at, currency,
+                       resolved_outcome, closed_at
                 FROM bets WHERE message_id = ?
                 """,
                 (str(message_id),),
@@ -633,11 +702,35 @@ class WorshipStore:
                 "content": str(bet[4]),
                 "created_at": int(bet[5]),
                 "expires_at": int(bet[6]),
-                "currency": str(bet[7]),
-                "resolved_outcome": bet[8],
-                "closed_at": int(bet[9]) if bet[9] is not None else None,
+                "started_at": int(bet[7]) if bet[7] is not None else None,
+                "currency": str(bet[8]),
+                "resolved_outcome": bet[9],
+                "closed_at": int(bet[10]) if bet[10] is not None else None,
                 "options": [(str(row[0]), float(row[1])) for row in options],
             }
+
+    def start_bet(self, message_id: str, now_ms: int) -> dict[str, Any]:
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                """
+                SELECT started_at, resolved_outcome, closed_at
+                FROM bets WHERE message_id = ?
+                """,
+                (str(message_id),),
+            ).fetchone()
+            if bet is None:
+                raise ValueError("找不到這個賭盤")
+            if bet[1] is not None:
+                raise ValueError("這個賭盤已經結算，無法開始下注")
+            if bet[2] is not None:
+                raise ValueError("這個賭盤已經停止下注，無法開始")
+            if bet[0] is not None:
+                raise ValueError("這個賭盤已經開始下注")
+            connection.execute(
+                "UPDATE bets SET started_at = ? WHERE message_id = ?",
+                (int(now_ms), str(message_id)),
+            )
+            return {"started_at": int(now_ms)}
 
     def stop_bet(self, message_id: str, now_ms: int) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
@@ -655,6 +748,10 @@ class WorshipStore:
                     "UPDATE bets SET closed_at = ? WHERE message_id = ?",
                     (int(now_ms), str(message_id)),
                 )
+                connection.execute(
+                    "DELETE FROM bet_prohibitions WHERE bet_message_id = ?",
+                    (str(message_id),),
+                )
             return {
                 "resolved_outcome": bet[0],
                 "closed_at": int(bet[1]) if bet[1] is not None else int(now_ms),
@@ -665,6 +762,7 @@ class WorshipStore:
         message_id: str,
         user_id: str,
         option_name: str,
+        currency: str,
         amount: int,
         now_ms: int,
     ) -> dict[str, Any]:
@@ -674,7 +772,7 @@ class WorshipStore:
         with self.lock, self._connect() as connection:
             self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
-                "SELECT expires_at, resolved_outcome, closed_at, currency FROM bets WHERE message_id = ?",
+                "SELECT expires_at, resolved_outcome, closed_at, started_at FROM bets WHERE message_id = ?",
                 (str(message_id),),
             ).fetchone()
             if bet is None:
@@ -683,6 +781,8 @@ class WorshipStore:
                 raise ValueError("這個賭盤已經結算")
             if bet[2] is not None:
                 raise ValueError("這個賭盤已經停止下注")
+            if bet[3] is None:
+                raise ValueError("這個賭盤尚未開始下注")
             if int(now_ms) >= int(bet[0]):
                 raise ValueError("這個賭盤已經截止下注")
 
@@ -696,12 +796,22 @@ class WorshipStore:
             if option is None:
                 raise ValueError("找不到這個下注狀況")
 
+            prohibited = connection.execute(
+                """
+                SELECT 1 FROM bet_prohibitions
+                WHERE bet_message_id = ? AND user_id = ? AND option_name = ?
+                """,
+                (str(message_id), str(user_id), option_name),
+            ).fetchone()
+            if prohibited is not None:
+                raise ValueError("你無法下注這個賭盤的指定選項")
+
             currency_columns = {
                 "fumao_coins": "fumao_coins",
                 "crystals": "crystals",
                 "grace": "grace",
             }
-            currency = str(bet[3])
+            currency = str(currency)
             currency_column = currency_columns.get(currency)
             if currency_column is None:
                 raise ValueError("這個賭盤使用了未知的貨幣種類")
@@ -723,12 +833,19 @@ class WorshipStore:
             connection.execute(
                 """
                 INSERT INTO bet_entries(
-                    bet_message_id, user_id, option_name, amount, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(bet_message_id, user_id, option_name)
+                    bet_message_id, user_id, option_name, currency, amount, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bet_message_id, user_id, option_name, currency)
                 DO UPDATE SET amount = amount + excluded.amount
                 """,
-                (str(message_id), str(user_id), option_name, int(amount), int(now_ms)),
+                (
+                    str(message_id),
+                    str(user_id),
+                    option_name,
+                    currency,
+                    int(amount),
+                    int(now_ms),
+                ),
             )
             return {
                 "amount": int(amount),
@@ -738,27 +855,81 @@ class WorshipStore:
                 "currency": currency,
             }
 
+    def prohibit_bet_options(
+        self,
+        message_id: str,
+        user_ids: list[str],
+        option_names: list[str],
+    ) -> int:
+        unique_users = list(dict.fromkeys(str(user_id) for user_id in user_ids))
+        unique_options = list(dict.fromkeys(option.strip() for option in option_names if option.strip()))
+        if not unique_users or not unique_options:
+            raise ValueError("至少需要一位使用者與一個賭盤選項")
+
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                """
+                SELECT message_id, resolved_outcome, closed_at, expires_at
+                FROM bets WHERE message_id = ?
+                """,
+                (str(message_id),),
+            ).fetchone()
+            if bet is None:
+                raise ValueError("找不到這個賭盤")
+            if bet[1] is not None or bet[2] is not None:
+                connection.execute(
+                    "DELETE FROM bet_prohibitions WHERE bet_message_id = ?",
+                    (str(message_id),),
+                )
+                raise ValueError("這個賭盤已經結束，無法新增下注限制")
+            if int(time.time() * 1000) >= int(bet[3]):
+                connection.execute(
+                    "DELETE FROM bet_prohibitions WHERE bet_message_id = ?",
+                    (str(message_id),),
+                )
+                raise ValueError("這個賭盤已經截止，無法新增下注限制")
+
+            available_options = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT option_name FROM bet_options WHERE bet_message_id = ?",
+                    (str(message_id),),
+                ).fetchall()
+            }
+            invalid_options = [
+                option for option in unique_options if option not in available_options
+            ]
+            if invalid_options:
+                raise ValueError(
+                    "找不到賭盤選項：" + "、".join(invalid_options)
+                )
+
+            before = connection.total_changes
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO bet_prohibitions(
+                    bet_message_id, user_id, option_name
+                ) VALUES (?, ?, ?)
+                """,
+                [
+                    (str(message_id), user_id, option_name)
+                    for user_id in unique_users
+                    for option_name in unique_options
+                ],
+            )
+            return max(0, connection.total_changes - before)
+
     def resolve_bet(self, message_id: str, outcome: str, now_ms: int) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
             self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
-                "SELECT resolved_outcome, currency FROM bets WHERE message_id = ?",
+                "SELECT resolved_outcome FROM bets WHERE message_id = ?",
                 (str(message_id),),
             ).fetchone()
             if bet is None:
                 raise ValueError("找不到這個賭盤")
             if bet[0] is not None:
                 raise ValueError("這個賭盤已經結算")
-            currency_columns = {
-                "fumao_coins": "fumao_coins",
-                "crystals": "crystals",
-                "grace": "grace",
-            }
-            currency = str(bet[1])
-            currency_column = currency_columns.get(currency)
-            if currency_column is None:
-                raise ValueError("這個賭盤使用了未知的貨幣種類")
-
             requested_outcomes = [
                 item.strip()
                 for item in outcome.split(",")
@@ -790,7 +961,7 @@ class WorshipStore:
 
             entries = connection.execute(
                 """
-                SELECT user_id, option_name, amount
+                SELECT user_id, option_name, currency, amount
                 FROM bet_entries WHERE bet_message_id = ?
                 """,
                 (str(message_id),),
@@ -798,15 +969,32 @@ class WorshipStore:
             refunded = 0
             paid = 0
             winners = 0
-            for user_id, option_name, amount in entries:
+            paid_by_currency: dict[str, int] = {}
+            refunded_by_currency: dict[str, int] = {}
+            for user_id, option_name, entry_currency, amount in entries:
                 amount = int(amount)
+                entry_currency = str(entry_currency)
+                currency_columns = {
+                    "fumao_coins": "fumao_coins",
+                    "crystals": "crystals",
+                    "grace": "grace",
+                }
+                currency_column = currency_columns.get(entry_currency)
+                if currency_column is None:
+                    raise ValueError("下注紀錄使用了未知的貨幣種類")
                 if normalized.casefold() == "return":
                     payout = amount
                     refunded += payout
+                    refunded_by_currency[entry_currency] = (
+                        refunded_by_currency.get(entry_currency, 0) + payout
+                    )
                 elif str(option_name) in winning_odds:
                     payout = int(round(amount * winning_odds[str(option_name)]))
                     paid += payout
                     winners += 1
+                    paid_by_currency[entry_currency] = (
+                        paid_by_currency.get(entry_currency, 0) + payout
+                    )
                 else:
                     payout = 0
                 if payout:
@@ -823,7 +1011,7 @@ class WorshipStore:
                     self._record_economy_currency_change(
                         connection,
                         str(user_id),
-                        currency,
+                        entry_currency,
                         payout,
                         source,
                         int(now_ms),
@@ -833,7 +1021,11 @@ class WorshipStore:
                 "UPDATE bets SET resolved_outcome = ? WHERE message_id = ?",
                 (normalized, str(message_id)),
             )
-            total_entries = sum(int(row[2]) for row in entries)
+            connection.execute(
+                "DELETE FROM bet_prohibitions WHERE bet_message_id = ?",
+                (str(message_id),),
+            )
+            total_entries = sum(int(row[3]) for row in entries)
             return {
                 "outcome": normalized,
                 "entries": len(entries),
@@ -841,6 +1033,8 @@ class WorshipStore:
                 "refunded": refunded,
                 "paid": paid,
                 "winners": winners,
+                "paid_by_currency": paid_by_currency,
+                "refunded_by_currency": refunded_by_currency,
             }
 
     def change_economy_currency(
