@@ -16,7 +16,11 @@ from components_v2 import v2_view_from_embed
 FUMAO_COIN = "<:FumaoCoin:1554060935725973554>"
 MAX_OPTIONS = 5
 MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
-DURATION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.IGNORECASE)
+DURATION_PATTERN = re.compile(
+    r"^(?:\d+(?:\.\d+)?\s*[smhd]\s*)+$",
+    re.IGNORECASE,
+)
+DURATION_PART_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([smhd])", re.IGNORECASE)
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 
 
@@ -30,12 +34,23 @@ def _format_deadline(timestamp_ms: int) -> str:
 
 
 def _parse_duration(value: str) -> int:
-    match = DURATION_PATTERN.fullmatch(value)
-    if match is None:
-        raise ValueError("時間格式請使用例如 `30m`、`2h` 或 `1d`")
-    number = float(match.group(1))
+    normalized = value.strip()
+    if DURATION_PATTERN.fullmatch(normalized) is None:
+        raise ValueError("時間格式請使用例如 `10s`、`1m30s`、`2h` 或 `1d`")
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    seconds = int(number * units[match.group(2).lower()])
+    parts = list(DURATION_PART_PATTERN.finditer(normalized))
+    matched_text = "".join("".join(part.group(0).split()) for part in parts)
+    if not parts or matched_text != "".join(normalized.split()):
+        raise ValueError("時間格式請使用例如 `10s`、`1m30s`、`2h` 或 `1d`")
+    seen_units: set[str] = set()
+    seconds = 0.0
+    for part in parts:
+        unit = part.group(2).lower()
+        if unit in seen_units:
+            raise ValueError("同一個時間單位只能出現一次，例如請使用 `2m`，不要使用 `1m60s`")
+        seen_units.add(unit)
+        seconds += float(part.group(1)) * units[unit]
+    seconds = int(seconds)
     if seconds < 1 or seconds > MAX_DURATION_SECONDS:
         raise ValueError("下注時間必須介於 1 秒與 30 天之間")
     return seconds
@@ -106,7 +121,7 @@ def _bet_embed(
 class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
     duration = discord.ui.TextInput(
         label="下注持續時間",
-        placeholder="例如：10s、30m、2h、1d",
+        placeholder="例如：10s、1m30s、2h、1d",
         max_length=20,
     )
     title_input = discord.ui.TextInput(
@@ -312,6 +327,18 @@ class BetOpenView(discord.ui.View):
         if self.closed:
             return
         self.closed = True
+        if self.store is not None and self.message_id is not None:
+            try:
+                result = await asyncio.to_thread(
+                    self.store.stop_bet,
+                    self.message_id,
+                    int(time.time() * 1000),
+                )
+            except ValueError:
+                return
+            if result.get("resolved_outcome") is not None:
+                self.stop()
+                return
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
@@ -349,6 +376,43 @@ class BetOpenView(discord.ui.View):
         return callback
 
 
+async def stop_bet_message(
+    message: discord.Message,
+    store: Any,
+    message_id: str,
+) -> discord.Embed:
+    import asyncio
+
+    bet = await asyncio.to_thread(store.bet_details, message_id)
+    if bet is None:
+        raise ValueError("找不到這個賭盤")
+    if bet["resolved_outcome"] is not None:
+        raise ValueError("這個賭盤已經結算，無法停止下注")
+
+    try:
+        target = await message.channel.fetch_message(int(message_id))
+    except (discord.HTTPException, ValueError) as error:
+        raise ValueError("找不到賭盤訊息，請確認訊息 ID 位於目前頻道。") from error
+
+    bet_view = BetOpenView(
+        store,
+        bet["title"],
+        bet["content"],
+        bet["options"],
+        bet["expires_at"],
+    )
+    bet_view.message_id = str(message_id)
+    bet_view.message = target
+    await bet_view.close()
+    return _bet_embed(
+        bet["title"],
+        bet["content"],
+        bet["options"],
+        bet["expires_at"],
+        closed=True,
+    )
+
+
 def setup_bet_card(store: Any, channel: Any, guild_id: str) -> discord.ui.View:
     embed = discord.Embed(
         title="🎲 建立賭盤",
@@ -384,7 +448,11 @@ async def resolve_bet_message(
         bet["content"],
         bet["options"],
         bet["expires_at"],
-        resolved=result["outcome"],
+        resolved=(
+            result["outcome"]
+            if result["outcome"].casefold() == "return"
+            else result["outcome"].replace(",", "、")
+        ),
     )
     if result["outcome"].casefold() == "return":
         resolved_embed.add_field(

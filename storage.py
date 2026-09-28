@@ -85,7 +85,8 @@ class WorshipStore:
                     content TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL,
-                    resolved_outcome TEXT
+                    resolved_outcome TEXT,
+                    closed_at INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS bet_options (
@@ -144,6 +145,14 @@ class WorshipStore:
             if "created_at" not in columns:
                 connection.execute(
                     "ALTER TABLE deleted_messages ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0"
+                )
+            bet_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(bets)")
+            }
+            if "closed_at" not in bet_columns:
+                connection.execute(
+                    "ALTER TABLE bets ADD COLUMN closed_at INTEGER"
                 )
             migration = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'give_role_permission_migrated'"
@@ -593,7 +602,7 @@ class WorshipStore:
             bet = connection.execute(
                 """
                 SELECT message_id, guild_id, channel_id, title, content,
-                       created_at, expires_at, resolved_outcome
+                       created_at, expires_at, resolved_outcome, closed_at
                 FROM bets WHERE message_id = ?
                 """,
                 (str(message_id),),
@@ -618,7 +627,29 @@ class WorshipStore:
                 "created_at": int(bet[5]),
                 "expires_at": int(bet[6]),
                 "resolved_outcome": bet[7],
+                "closed_at": int(bet[8]) if bet[8] is not None else None,
                 "options": [(str(row[0]), float(row[1])) for row in options],
+            }
+
+    def stop_bet(self, message_id: str, now_ms: int) -> dict[str, Any]:
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                """
+                SELECT resolved_outcome, closed_at
+                FROM bets WHERE message_id = ?
+                """,
+                (str(message_id),),
+            ).fetchone()
+            if bet is None:
+                raise ValueError("找不到這個賭盤")
+            if bet[0] is None and bet[1] is None:
+                connection.execute(
+                    "UPDATE bets SET closed_at = ? WHERE message_id = ?",
+                    (int(now_ms), str(message_id)),
+                )
+            return {
+                "resolved_outcome": bet[0],
+                "closed_at": int(bet[1]) if bet[1] is not None else int(now_ms),
             }
 
     def place_bet(
@@ -635,13 +666,15 @@ class WorshipStore:
         with self.lock, self._connect() as connection:
             self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
-                "SELECT expires_at, resolved_outcome FROM bets WHERE message_id = ?",
+                "SELECT expires_at, resolved_outcome, closed_at FROM bets WHERE message_id = ?",
                 (str(message_id),),
             ).fetchone()
             if bet is None:
                 raise ValueError("找不到這個賭盤")
             if bet[1] is not None:
                 raise ValueError("這個賭盤已經結算")
+            if bet[2] is not None:
+                raise ValueError("這個賭盤已經停止下注")
             if int(now_ms) >= int(bet[0]):
                 raise ValueError("這個賭盤已經截止下注")
 
@@ -699,20 +732,34 @@ class WorshipStore:
             if bet[0] is not None:
                 raise ValueError("這個賭盤已經結算")
 
-            normalized = outcome.strip()
-            if normalized.casefold() != "return":
-                option = connection.execute(
-                    """
-                    SELECT odds FROM bet_options
-                    WHERE bet_message_id = ? AND option_name = ?
-                    """,
-                    (str(message_id), normalized),
-                ).fetchone()
-                if option is None:
-                    raise ValueError("找不到這個結算狀況")
-                winning_odds = float(option[0])
+            requested_outcomes = [
+                item.strip()
+                for item in outcome.split(",")
+                if item.strip()
+            ]
+            if not requested_outcomes:
+                raise ValueError("請提供至少一個結算狀況")
+            if any(item.casefold() == "return" for item in requested_outcomes):
+                if len(requested_outcomes) != 1:
+                    raise ValueError("return 不能與其他結算狀況一起使用")
+                normalized = "return"
+                winning_odds: dict[str, float] = {}
             else:
-                winning_odds = None
+                winning_odds = {}
+                for requested in requested_outcomes:
+                    if requested in winning_odds:
+                        raise ValueError(f"結算狀況 `{requested}` 重複了")
+                    option = connection.execute(
+                        """
+                        SELECT odds FROM bet_options
+                        WHERE bet_message_id = ? AND option_name = ?
+                        """,
+                        (str(message_id), requested),
+                    ).fetchone()
+                    if option is None:
+                        raise ValueError(f"找不到這個結算狀況：{requested}")
+                    winning_odds[requested] = float(option[0])
+                normalized = ",".join(requested_outcomes)
 
             entries = connection.execute(
                 """
@@ -729,8 +776,8 @@ class WorshipStore:
                 if normalized.casefold() == "return":
                     payout = amount
                     refunded += payout
-                elif str(option_name) == normalized:
-                    payout = int(round(amount * winning_odds))
+                elif str(option_name) in winning_odds:
+                    payout = int(round(amount * winning_odds[str(option_name)]))
                     paid += payout
                     winners += 1
                 else:
@@ -744,7 +791,7 @@ class WorshipStore:
                     source = (
                         "賭盤退款"
                         if normalized.casefold() == "return"
-                        else f"賭盤結算：{normalized}"
+                        else f"賭盤結算：{'、'.join(requested_outcomes)}"
                     )
                     self._record_economy_currency_change(
                         connection,

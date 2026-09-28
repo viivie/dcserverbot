@@ -14,7 +14,7 @@ from commands.master import get_active_view, register_active_view
 from commands.economy import CURRENCY_EMOJIS
 from .cleanup import DeleteConfirmView
 from .economy import money_log_view
-from .bets import resolve_bet_message, setup_bet_card
+from .bets import resolve_bet_message, setup_bet_card, stop_bet_message
 from .roles import GiveRoleConfirmView
 from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
 
@@ -26,7 +26,7 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "resolve-bet", "money-log"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "stop-bet", "resolve-bet", "money-log"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 MONEY_LOG_ALIASES = frozenset({"money-log", "moneylog"})
@@ -58,8 +58,12 @@ COMMAND_INFO = {
         "&create-bet（按按鈕後填寫表單）",
     ),
     "resolve-bet": (
-        "結算賭盤；使用 return 會退還所有押注。",
-        "&resolve-bet 訊息ID 狀況（退款：return）",
+        "結算賭盤；可同時指定多個結果，使用 return 會退還所有押注。",
+        "&resolve-bet 訊息ID 狀況[,狀況...]（退款：return）",
+    ),
+    "stop-bet": (
+        "立即停止賭盤下注並停用原卡片上的所有下注按鈕。",
+        "&stop-bet 訊息ID",
     ),
     "money-log": (
         "以私人訊息查看某人最近 3 天的貨幣變動紀錄。",
@@ -121,10 +125,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "money-log", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "money-log", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "money-log", "id", "response")
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "money-log", "id", "response")
             if store.has_prefix_command(user_id, command)
         ]
 
@@ -317,20 +321,40 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             if message.guild is None:
                 await message.author.send("賭盤只能在伺服器頻道建立。")
                 return True
-            try:
-                await message.author.send(
-                    view=setup_bet_card(store, message.channel, str(message.guild.id)),
+            await message.channel.send(
+                view=setup_bet_card(store, message.channel, str(message.guild.id)),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
+        if command == "stop-bet":
+            message_id = arguments.strip()
+            if not ID_PATTERN.fullmatch(message_id):
+                await message.channel.send(
+                    "用法：&stop-bet 訊息ID",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
-            except discord.Forbidden:
                 return True
+            try:
+                result_embed = await stop_bet_message(message, store, message_id)
+            except ValueError as error:
+                await message.channel.send(
+                    str(error),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            result_embed.title = "⏹️ 賭盤已停止下注"
+            await message.channel.send(
+                view=v2_view_from_embed(result_embed),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return True
 
         if command == "resolve-bet":
             values = arguments.split(maxsplit=1)
             if len(values) != 2 or not ID_PATTERN.fullmatch(values[0]) or not values[1].strip():
                 await message.channel.send(
-                    "用法：&resolve-bet 訊息ID 狀況（退款請使用 return）",
+                    "用法：&resolve-bet 訊息ID 狀況[,狀況...]（退款請單獨使用 return）",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
                 return True
@@ -830,7 +854,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&resolve-bet、&money-log、&id、&response"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&stop-bet、&resolve-bet、&money-log、&id、&response"
         )
         return
 
