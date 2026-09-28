@@ -64,6 +64,36 @@ class WorshipStore:
                     last_hourly_at INTEGER
                 );
 
+                CREATE TABLE IF NOT EXISTS bets (
+                    message_id TEXT PRIMARY KEY,
+                    guild_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    resolved_outcome TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS bet_options (
+                    bet_message_id TEXT NOT NULL,
+                    option_name TEXT NOT NULL,
+                    odds REAL NOT NULL,
+                    sort_order INTEGER NOT NULL,
+                    PRIMARY KEY (bet_message_id, option_name),
+                    FOREIGN KEY (bet_message_id) REFERENCES bets(message_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS bet_entries (
+                    bet_message_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    option_name TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (bet_message_id, user_id, option_name),
+                    FOREIGN KEY (bet_message_id) REFERENCES bets(message_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS prefix_command_permissions (
                     user_id TEXT NOT NULL,
                     command TEXT NOT NULL,
@@ -259,16 +289,22 @@ class WorshipStore:
         with self.lock, self._connect() as connection:
             account = self._select_economy_account(connection, str(user_id))
             last_hourly_at = account["last_hourly_at"]
+            hour_ms = 3_600_000
+            current_hour_start = (int(now_ms) // hour_ms) * hour_ms
             if last_hourly_at is None:
                 accumulated_hours = 1
             else:
-                accumulated_hours = max(0, (int(now_ms) - last_hourly_at) // 3_600_000)
+                last_hour_start = (int(last_hourly_at) // hour_ms) * hour_ms
+                accumulated_hours = max(
+                    0,
+                    (current_hour_start - last_hour_start) // hour_ms,
+                )
 
             if accumulated_hours < 1:
                 account["claimed"] = False
                 account["reward"] = 0
                 account["accumulated_hours"] = 0
-                account["next_hourly_at"] = last_hourly_at + 3_600_000
+                account["next_hourly_at"] = current_hour_start + hour_ms
                 return account
 
             accumulated_hours = min(accumulated_hours, max(1, int(saved_hours)))
@@ -279,7 +315,7 @@ class WorshipStore:
                 SET fumao_coins = fumao_coins + ?, last_hourly_at = ?
                 WHERE user_id = ?
                 """,
-                (reward, int(now_ms), str(user_id)),
+                (reward, current_hour_start, str(user_id)),
             )
             account = self._select_economy_account(connection, str(user_id))
             account["claimed"] = True
@@ -348,6 +384,228 @@ class WorshipStore:
                 (int(amount), str(user_id)),
             )
             return self._select_economy_account(connection, str(user_id))
+
+    def grant_economy_currency_all(
+        self,
+        currency: str,
+        amount: int,
+    ) -> int:
+        """Grant a currency to every account already registered in the database."""
+        columns = {
+            "fumao_coins": "fumao_coins",
+            "crystals": "crystals",
+            "grace": "grace",
+        }
+        column = columns.get(currency)
+        if column is None:
+            raise ValueError(f"未知的貨幣種類：{currency}")
+        if int(amount) < 1:
+            raise ValueError("發放數量必須大於 0")
+
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE economy_accounts SET {column} = {column} + ?",
+                (int(amount),),
+            )
+            return max(0, int(cursor.rowcount))
+
+    def create_bet(
+        self,
+        message_id: str,
+        guild_id: str,
+        channel_id: str,
+        title: str,
+        content: str,
+        created_at: int,
+        expires_at: int,
+        options: list[tuple[str, float]],
+    ) -> None:
+        with self.lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO bets(
+                    message_id, guild_id, channel_id, title, content,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(message_id),
+                    str(guild_id),
+                    str(channel_id),
+                    title,
+                    content,
+                    int(created_at),
+                    int(expires_at),
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO bet_options(bet_message_id, option_name, odds, sort_order)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (str(message_id), option_name, float(odds), index)
+                    for index, (option_name, odds) in enumerate(options)
+                ],
+            )
+
+    def bet_details(self, message_id: str) -> dict[str, Any] | None:
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                """
+                SELECT message_id, guild_id, channel_id, title, content,
+                       created_at, expires_at, resolved_outcome
+                FROM bets WHERE message_id = ?
+                """,
+                (str(message_id),),
+            ).fetchone()
+            if bet is None:
+                return None
+            options = connection.execute(
+                """
+                SELECT option_name, odds
+                FROM bet_options
+                WHERE bet_message_id = ?
+                ORDER BY sort_order
+                """,
+                (str(message_id),),
+            ).fetchall()
+            return {
+                "message_id": str(bet[0]),
+                "guild_id": str(bet[1]),
+                "channel_id": str(bet[2]),
+                "title": str(bet[3]),
+                "content": str(bet[4]),
+                "created_at": int(bet[5]),
+                "expires_at": int(bet[6]),
+                "resolved_outcome": bet[7],
+                "options": [(str(row[0]), float(row[1])) for row in options],
+            }
+
+    def place_bet(
+        self,
+        message_id: str,
+        user_id: str,
+        option_name: str,
+        amount: int,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        if int(amount) < 1:
+            raise ValueError("下注數量必須大於 0")
+
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                "SELECT expires_at, resolved_outcome FROM bets WHERE message_id = ?",
+                (str(message_id),),
+            ).fetchone()
+            if bet is None:
+                raise ValueError("找不到這個賭盤")
+            if bet[1] is not None:
+                raise ValueError("這個賭盤已經結算")
+            if int(now_ms) >= int(bet[0]):
+                raise ValueError("這個賭盤已經截止下注")
+
+            option = connection.execute(
+                """
+                SELECT odds FROM bet_options
+                WHERE bet_message_id = ? AND option_name = ?
+                """,
+                (str(message_id), option_name),
+            ).fetchone()
+            if option is None:
+                raise ValueError("找不到這個下注狀況")
+
+            account = self._select_economy_account(connection, str(user_id))
+            if int(account["fumao_coins"]) < int(amount):
+                raise ValueError("芙帽幣不足")
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
+                (int(amount), str(user_id)),
+            )
+            connection.execute(
+                """
+                INSERT INTO bet_entries(
+                    bet_message_id, user_id, option_name, amount, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(bet_message_id, user_id, option_name)
+                DO UPDATE SET amount = amount + excluded.amount
+                """,
+                (str(message_id), str(user_id), option_name, int(amount), int(now_ms)),
+            )
+            return {
+                "amount": int(amount),
+                "option_name": option_name,
+                "odds": float(option[0]),
+                "balance": int(account["fumao_coins"]) - int(amount),
+            }
+
+    def resolve_bet(self, message_id: str, outcome: str, now_ms: int) -> dict[str, Any]:
+        with self.lock, self._connect() as connection:
+            bet = connection.execute(
+                "SELECT resolved_outcome FROM bets WHERE message_id = ?",
+                (str(message_id),),
+            ).fetchone()
+            if bet is None:
+                raise ValueError("找不到這個賭盤")
+            if bet[0] is not None:
+                raise ValueError("這個賭盤已經結算")
+
+            normalized = outcome.strip()
+            if normalized.casefold() != "return":
+                option = connection.execute(
+                    """
+                    SELECT odds FROM bet_options
+                    WHERE bet_message_id = ? AND option_name = ?
+                    """,
+                    (str(message_id), normalized),
+                ).fetchone()
+                if option is None:
+                    raise ValueError("找不到這個結算狀況")
+                winning_odds = float(option[0])
+            else:
+                winning_odds = None
+
+            entries = connection.execute(
+                """
+                SELECT user_id, option_name, amount
+                FROM bet_entries WHERE bet_message_id = ?
+                """,
+                (str(message_id),),
+            ).fetchall()
+            refunded = 0
+            paid = 0
+            winners = 0
+            for user_id, option_name, amount in entries:
+                amount = int(amount)
+                if normalized.casefold() == "return":
+                    payout = amount
+                    refunded += payout
+                elif str(option_name) == normalized:
+                    payout = int(round(amount * winning_odds))
+                    paid += payout
+                    winners += 1
+                else:
+                    payout = 0
+                if payout:
+                    self._select_economy_account(connection, str(user_id))
+                    connection.execute(
+                        "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
+                        (payout, str(user_id)),
+                    )
+
+            connection.execute(
+                "UPDATE bets SET resolved_outcome = ? WHERE message_id = ?",
+                (normalized, str(message_id)),
+            )
+            total_entries = sum(int(row[2]) for row in entries)
+            return {
+                "outcome": normalized,
+                "entries": len(entries),
+                "total_staked": total_entries,
+                "refunded": refunded,
+                "paid": paid,
+                "winners": winners,
+            }
 
     def change_economy_currency(self, user_id: str, currency: str, amount: int) -> dict[str, Any]:
         """Apply a currency delta without allowing the wallet to go negative."""

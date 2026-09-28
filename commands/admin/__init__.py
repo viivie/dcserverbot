@@ -13,6 +13,7 @@ from components_v2 import v2_view_from_embed
 from commands.master import get_active_view, register_active_view
 from commands.economy import CURRENCY_EMOJIS
 from .cleanup import DeleteConfirmView
+from .bets import resolve_bet_message, setup_bet_card
 from .roles import GiveRoleConfirmView
 from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
 
@@ -24,7 +25,7 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "resolve-bet"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 CURRENCY_ALIASES = {
@@ -32,7 +33,6 @@ CURRENCY_ALIASES = {
     "fumaocoin": "fumao_coins",
     "fumao_coin": "fumao_coins",
     "芙帽幣": "fumao_coins",
-    "芙帽币": "fumao_coins",
     "coin": "fumao_coins",
     "crystal": "crystals",
     "crystals": "crystals",
@@ -48,8 +48,16 @@ COMMAND_INFO = {
     "react": ("讓機器人對指定訊息加上一個或多個反應。", "&react 訊息ID 表情 [表情...]"),
     "delete": ("刪除目前頻道最近的指定數量訊息。", "&delete 數量（最多 100）"),
     "give": (
-        "直接發放芙帽幣、水晶或神恩給指定使用者。",
-        "&give 使用者ID 貨幣種類 數量",
+        "直接發放芙帽幣、水晶或神恩給指定使用者，也可發給所有已建立經濟帳戶的使用者。",
+        "&give 使用者ID 貨幣種類 數量（全部：&give all 貨幣種類 數量）",
+    ),
+    "create-bet": (
+        "以私人表單建立芙帽幣賭盤。",
+        "&create-bet（按按鈕後填寫表單）",
+    ),
+    "resolve-bet": (
+        "結算賭盤；使用 return 會退還所有押注。",
+        "&resolve-bet 訊息ID 狀況（退款：return）",
     ),
     "give_role": (
         "給予一個或多個身分組；一般模式需要對方同意，force 模式直接給予。",
@@ -103,10 +111,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "id", "response")
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "id", "response")
             if store.has_prefix_command(user_id, command)
         ]
 
@@ -295,6 +303,43 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 )
             return True
 
+        if command == "create-bet":
+            if message.guild is None:
+                await message.author.send("賭盤只能在伺服器頻道建立。")
+                return True
+            await message.channel.send(
+                view=setup_bet_card(store, message.channel, str(message.guild.id)),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
+        if command == "resolve-bet":
+            values = arguments.split(maxsplit=1)
+            if len(values) != 2 or not ID_PATTERN.fullmatch(values[0]) or not values[1].strip():
+                await message.channel.send(
+                    "用法：&resolve-bet 訊息ID 狀況（退款請使用 return）",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            try:
+                result_embed = await resolve_bet_message(
+                    message,
+                    store,
+                    values[0],
+                    values[1].strip(),
+                )
+            except ValueError as error:
+                await message.channel.send(
+                    str(error),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            await message.channel.send(
+                view=v2_view_from_embed(result_embed),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
         if command == "sql":
             statement = arguments.strip()
             if not statement:
@@ -437,8 +482,11 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
 
         if command == "give":
             values = arguments.split()
-            if len(values) != 3 or not ID_PATTERN.fullmatch(values[0]):
-                await message.channel.send("用法：&give 使用者ID 貨幣種類 數量")
+            all_users = bool(values and values[0].casefold() == "all")
+            if len(values) != 3 or (not all_users and not ID_PATTERN.fullmatch(values[0])):
+                await message.channel.send(
+                    "用法：&give 使用者ID 貨幣種類 數量，或 &give all 貨幣種類 數量"
+                )
                 return True
 
             currency = _currency_name(values[1])
@@ -455,6 +503,39 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 await message.channel.send("發放數量必須介於 1 到 9,000,000,000,000,000,000。")
                 return True
 
+            labels = {
+                "fumao_coins": ("芙帽幣", "FumaoCoin"),
+                "crystals": ("水晶", "Crystal"),
+                "grace": ("神恩", "grace"),
+            }
+            currency_label, emoji_name = labels[currency]
+            emoji = CURRENCY_EMOJIS.get(emoji_name, f":{emoji_name}:")
+
+            if all_users:
+                try:
+                    account_count = await _run_in_thread(
+                        store.grant_economy_currency_all,
+                        currency,
+                        amount,
+                    )
+                except (OverflowError, ValueError):
+                    await message.channel.send("發放貨幣失敗，請確認貨幣種類與數量。")
+                    return True
+
+                embed = discord.Embed(
+                    title="✅ 全體貨幣發放完成",
+                    description=(
+                        f"已給予 **{account_count}** 個經濟帳戶，每個帳戶 **{amount:,}** "
+                        f"{currency_label} {emoji}。"
+                    ),
+                    color=0x2ECC71,
+                )
+                await message.channel.send(
+                    view=v2_view_from_embed(embed),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
             try:
                 account = await _run_in_thread(
                     store.grant_economy_currency,
@@ -466,13 +547,6 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 await message.channel.send("發放貨幣失敗，請確認貨幣種類與數量。")
                 return True
 
-            labels = {
-                "fumao_coins": ("芙帽幣", "FumaoCoin"),
-                "crystals": ("水晶", "Crystal"),
-                "grace": ("神恩", "grace"),
-            }
-            currency_label, emoji_name = labels[currency]
-            emoji = CURRENCY_EMOJIS.get(emoji_name, f":{emoji_name}:")
             embed = discord.Embed(
                 title="✅ 貨幣發放完成",
                 description=(
@@ -709,7 +783,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&id、&response"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&resolve-bet、&id、&response"
         )
         return
 

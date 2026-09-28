@@ -126,6 +126,27 @@ def _period_time(now: datetime) -> str:
     return f"{period} {hour:02d}:{now.minute:02d}"
 
 
+async def _send_interaction_response_with_retry(
+    interaction: discord.Interaction,
+    **kwargs: Any,
+) -> None:
+    """Retry transient Discord 503 responses without double-acknowledging."""
+    for attempt in range(3):
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(**kwargs)
+            else:
+                await interaction.response.send_message(**kwargs)
+            return
+        except discord.InteractionResponded:
+            await interaction.followup.send(**kwargs)
+            return
+        except discord.DiscordServerError as error:
+            if error.status != 503 or attempt == 2:
+                raise
+            await asyncio.sleep(0.4 * (attempt + 1))
+
+
 def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
     coin = _currency_emoji(guild, "FumaoCoin")
     return (
@@ -268,8 +289,14 @@ def _checkin_sections(
     if kind == "hourly":
         accumulated = int(account["accumulated_hours"])
         accumulated_reward = base_reward * accumulated
+        saved_hours = level_data(int(account["level"])).saved_hours
+        storage_note = (
+            f"（等級{account['level']}上限為{saved_hours}小時）"
+            if accumulated >= saved_hours
+            else ""
+        )
         calculation_lines = [
-            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 芙帽幣",
+            f"累積 {accumulated} 小時獎勵{storage_note}　　{_number(accumulated_reward)} 芙帽幣",
             f"每小時簽到倍率　　{_multiplier(multiplier)}",
         ]
     else:
@@ -345,9 +372,15 @@ def _quick_checkin_sections(
     if hourly.get("claimed"):
         accumulated = int(hourly["accumulated_hours"])
         accumulated_reward = int(hourly["base_reward"]) * accumulated
+        saved_hours = level_data(int(current_account["level"])).saved_hours
+        storage_note = (
+            f"（等級{current_account['level']}上限為{saved_hours}小時）"
+            if accumulated >= saved_hours
+            else ""
+        )
         hourly_value = (
             f"獲得 **{_number(hourly['reward'])}** {coin} 芙帽幣\n"
-            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 芙帽幣\n"
+            f"累積 {accumulated} 小時獎勵{storage_note}　　{_number(accumulated_reward)} 芙帽幣\n"
             f"每小時簽到倍率　　{_multiplier(float(hourly['multiplier']))}\n"
             f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 芙帽幣"
         )
@@ -652,8 +685,9 @@ def register_economy(
         cooldown_until = CURRENCY_COOLDOWNS.get(interaction.user.id, 0.0)
         if cooldown_until > now_monotonic:
             remaining = cooldown_until - now_monotonic
-            await interaction.response.send_message(
-                f"你使用指令太頻繁了，請等待 **{remaining:.1f} 秒** 後再試。",
+            await _send_interaction_response_with_retry(
+                interaction,
+                content=f"你使用指令太頻繁了，請等待 **{remaining:.1f} 秒** 後再試。",
                 ephemeral=True,
             )
             return
@@ -666,13 +700,16 @@ def register_economy(
             str(interaction.user.id),
         )
         if current_account["fumao_coins"] < 500:
-            await interaction.response.send_message(
-                "芙帽教的守衛拒絕讓你進入，你嘗試賄賂守衛，但你太窮了沒錢賄賂，"
-                "於是還沒搶劫就被趕出聖殿大門外了QQ"
+            await _send_interaction_response_with_retry(
+                interaction,
+                content=(
+                    "芙帽教的守衛拒絕讓你進入，你嘗試賄賂守衛，但你太窮了沒錢賄賂，"
+                    "於是還沒搶劫就被趕出聖殿大門外了QQ"
+                ),
             )
             return
 
-        success = random.random() < 0.10
+        success = random.random() < 0.20
         requested_amount = (
             random.randint(1_000, 10_000)
             if success
@@ -697,9 +734,16 @@ def register_economy(
             success,
         )
         if file is None:
-            await interaction.response.send_message(view=v2_view_from_embed(embed))
+            await _send_interaction_response_with_retry(
+                interaction,
+                view=v2_view_from_embed(embed),
+            )
         else:
-            await interaction.response.send_message(view=v2_view_from_embed(embed), file=file)
+            await _send_interaction_response_with_retry(
+                interaction,
+                view=v2_view_from_embed(embed),
+                file=file,
+            )
 
     @economy.command(name="餘額", description="查看芙帽幣、水晶與神恩餘額")
     @app_commands.guild_only()
