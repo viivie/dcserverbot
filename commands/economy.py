@@ -22,6 +22,8 @@ EMBED_COLOR = 0xE7A0B4
 BASE_REWARD_MIN = 100
 BASE_REWARD_MAX = 200
 DAILY_BASE_REWARD = 1_000
+ROBBERY_COOLDOWN_SECONDS = 1.0
+CURRENCY_COOLDOWNS: dict[int, float] = {}
 CURRENCY_EMOJIS = {
     "FumaoCoin": "<:FumaoCoin:1554060935725973554>",
     "Crystal": "<:Crystal:1554060934140403815>",
@@ -509,6 +511,19 @@ def register_economy(
     @economy.command(name="搶芙帽教聖殿", description="嘗試搶劫芙帽教聖殿，成功率 10%")
     @app_commands.guild_only()
     async def rob_fumao_temple(interaction: Any) -> None:
+        now_monotonic = time.monotonic()
+        cooldown_until = CURRENCY_COOLDOWNS.get(interaction.user.id, 0.0)
+        if cooldown_until > now_monotonic:
+            remaining = cooldown_until - now_monotonic
+            await interaction.response.send_message(
+                f"你使用指令太頻繁了，請等待 **{remaining:.1f} 秒** 後再試。",
+                ephemeral=True,
+            )
+            return
+        CURRENCY_COOLDOWNS[interaction.user.id] = (
+            now_monotonic + ROBBERY_COOLDOWN_SECONDS
+        )
+
         current_account = await asyncio.to_thread(
             context.store.economy_account,
             str(interaction.user.id),
