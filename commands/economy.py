@@ -720,6 +720,7 @@ def register_economy(
             str(interaction.user.id),
             "fumao_coins",
             requested_amount if success else -requested_amount,
+            "搶芙帽教聖殿",
         )
         amount = (
             int(account["changed"])

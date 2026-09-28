@@ -11,6 +11,8 @@ from typing import Any
 
 from commands.worship import next_streak, taipei_today
 
+ECONOMY_LOG_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
+
 
 class WorshipStore:
     def __init__(self, data_file: str):
@@ -63,6 +65,17 @@ class WorshipStore:
                     last_daily_date TEXT,
                     last_hourly_at INTEGER
                 );
+
+                CREATE TABLE IF NOT EXISTS economy_currency_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    amount INTEGER NOT NULL CHECK(amount != 0),
+                    source TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_economy_currency_logs_user_time
+                    ON economy_currency_logs(user_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS bets (
                     message_id TEXT PRIMARY KEY,
@@ -246,6 +259,65 @@ class WorshipStore:
         with self.lock, self._connect() as connection:
             return self._select_economy_account(connection, str(user_id))
 
+    @staticmethod
+    def _purge_economy_currency_logs(
+        connection: sqlite3.Connection,
+        now_ms: int,
+    ) -> None:
+        connection.execute(
+            "DELETE FROM economy_currency_logs WHERE created_at < ?",
+            (int(now_ms) - ECONOMY_LOG_RETENTION_MS,),
+        )
+
+    @staticmethod
+    def _record_economy_currency_change(
+        connection: sqlite3.Connection,
+        user_id: str,
+        currency: str,
+        amount: int,
+        source: str,
+        created_at: int,
+    ) -> None:
+        if int(amount) == 0:
+            return
+        connection.execute(
+            """
+            INSERT INTO economy_currency_logs(
+                user_id, currency, amount, source, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (str(user_id), currency, int(amount), source[:120], int(created_at)),
+        )
+
+    def economy_currency_logs(
+        self,
+        user_id: str,
+        now_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        current_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        with self.lock, self._connect() as connection:
+            self._purge_economy_currency_logs(connection, current_ms)
+            rows = connection.execute(
+                """
+                SELECT currency, amount, source, created_at
+                FROM economy_currency_logs
+                WHERE user_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (str(user_id), max(1, min(int(limit), 100))),
+            ).fetchall()
+            return [
+                {
+                    "currency": str(row[0]),
+                    "amount": int(row[1]),
+                    "source": str(row[2]),
+                    "created_at": int(row[3]),
+                }
+                for row in rows
+            ]
+
     def claim_daily(
         self,
         user_id: str,
@@ -255,6 +327,8 @@ class WorshipStore:
         random_multiplier: float = 1.0,
     ) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
             account = self._select_economy_account(connection, str(user_id))
             if account["last_daily_date"] == day:
                 account["claimed"] = False
@@ -269,6 +343,14 @@ class WorshipStore:
                 WHERE user_id = ?
                 """,
                 (reward, day, str(user_id)),
+            )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                "fumao_coins",
+                reward,
+                "每日簽到",
+                now_ms,
             )
             account = self._select_economy_account(connection, str(user_id))
             account["claimed"] = True
@@ -287,6 +369,8 @@ class WorshipStore:
         multiplier: float,
     ) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
             account = self._select_economy_account(connection, str(user_id))
             last_hourly_at = account["last_hourly_at"]
             hour_ms = 3_600_000
@@ -317,6 +401,14 @@ class WorshipStore:
                 """,
                 (reward, current_hour_start, str(user_id)),
             )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                "fumao_coins",
+                reward,
+                "每小時簽到",
+                now_ms,
+            )
             account = self._select_economy_account(connection, str(user_id))
             account["claimed"] = True
             account["reward"] = reward
@@ -333,6 +425,8 @@ class WorshipStore:
         crystal_cost: int,
     ) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
             account = self._select_economy_account(connection, str(user_id))
             if account["level"] + 1 != int(target_level):
                 account["upgraded"] = False
@@ -356,6 +450,22 @@ class WorshipStore:
                 """,
                 (int(coin_cost), int(crystal_cost), int(target_level), str(user_id)),
             )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                "fumao_coins",
+                -int(coin_cost),
+                "簽到等級升級",
+                now_ms,
+            )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                "crystals",
+                -int(crystal_cost),
+                "簽到等級升級",
+                now_ms,
+            )
             account = self._select_economy_account(connection, str(user_id))
             account["upgraded"] = True
             return account
@@ -378,10 +488,20 @@ class WorshipStore:
             raise ValueError("發放數量必須大於 0")
 
         with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
             self._select_economy_account(connection, str(user_id))
             connection.execute(
                 f"UPDATE economy_accounts SET {column} = {column} + ? WHERE user_id = ?",
                 (int(amount), str(user_id)),
+            )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                currency,
+                amount,
+                "管理員發放",
+                now_ms,
             )
             return self._select_economy_account(connection, str(user_id))
 
@@ -403,9 +523,28 @@ class WorshipStore:
             raise ValueError("發放數量必須大於 0")
 
         with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
+            users = [
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT user_id FROM economy_accounts"
+                ).fetchall()
+            ]
             cursor = connection.execute(
                 f"UPDATE economy_accounts SET {column} = {column} + ?",
                 (int(amount),),
+            )
+            connection.executemany(
+                """
+                INSERT INTO economy_currency_logs(
+                    user_id, currency, amount, source, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (user_id, currency, int(amount), "管理員全體發放", now_ms)
+                    for user_id in users
+                ],
             )
             return max(0, int(cursor.rowcount))
 
@@ -494,6 +633,7 @@ class WorshipStore:
             raise ValueError("下注數量必須大於 0")
 
         with self.lock, self._connect() as connection:
+            self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
                 "SELECT expires_at, resolved_outcome FROM bets WHERE message_id = ?",
                 (str(message_id),),
@@ -522,6 +662,14 @@ class WorshipStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
                 (int(amount), str(user_id)),
             )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                "fumao_coins",
+                -int(amount),
+                f"下注：{option_name}",
+                int(now_ms),
+            )
             connection.execute(
                 """
                 INSERT INTO bet_entries(
@@ -541,6 +689,7 @@ class WorshipStore:
 
     def resolve_bet(self, message_id: str, outcome: str, now_ms: int) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
+            self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
                 "SELECT resolved_outcome FROM bets WHERE message_id = ?",
                 (str(message_id),),
@@ -592,6 +741,19 @@ class WorshipStore:
                         "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
                         (payout, str(user_id)),
                     )
+                    source = (
+                        "賭盤退款"
+                        if normalized.casefold() == "return"
+                        else f"賭盤結算：{normalized}"
+                    )
+                    self._record_economy_currency_change(
+                        connection,
+                        str(user_id),
+                        "fumao_coins",
+                        payout,
+                        source,
+                        int(now_ms),
+                    )
 
             connection.execute(
                 "UPDATE bets SET resolved_outcome = ? WHERE message_id = ?",
@@ -607,12 +769,20 @@ class WorshipStore:
                 "winners": winners,
             }
 
-    def change_economy_currency(self, user_id: str, currency: str, amount: int) -> dict[str, Any]:
+    def change_economy_currency(
+        self,
+        user_id: str,
+        currency: str,
+        amount: int,
+        source: str = "系統獲得",
+    ) -> dict[str, Any]:
         """Apply a currency delta without allowing the wallet to go negative."""
         if currency != "fumao_coins":
             raise ValueError("目前只有芙帽幣支援增減操作")
 
         with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
             account = self._select_economy_account(connection, str(user_id))
             requested = int(amount)
             actual = requested
@@ -621,6 +791,14 @@ class WorshipStore:
             connection.execute(
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
                 (actual, str(user_id)),
+            )
+            self._record_economy_currency_change(
+                connection,
+                str(user_id),
+                currency,
+                actual,
+                source,
+                now_ms,
             )
             account = self._select_economy_account(connection, str(user_id))
             account["changed"] = actual

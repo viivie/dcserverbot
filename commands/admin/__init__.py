@@ -13,6 +13,7 @@ from components_v2 import v2_view_from_embed
 from commands.master import get_active_view, register_active_view
 from commands.economy import CURRENCY_EMOJIS
 from .cleanup import DeleteConfirmView
+from .economy import money_log_view
 from .bets import resolve_bet_message, setup_bet_card
 from .roles import GiveRoleConfirmView
 from .sql import SqlConfirmView, is_read_only_sql, sql_result_embed
@@ -25,9 +26,10 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "resolve-bet"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "resolve-bet", "money-log"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
+MONEY_LOG_ALIASES = frozenset({"money-log", "moneylog"})
 CURRENCY_ALIASES = {
     "fumao": "fumao_coins",
     "fumaocoin": "fumao_coins",
@@ -59,6 +61,10 @@ COMMAND_INFO = {
         "結算賭盤；使用 return 會退還所有押注。",
         "&resolve-bet 訊息ID 狀況（退款：return）",
     ),
+    "money-log": (
+        "以私人訊息查看某人最近 3 天的貨幣變動紀錄。",
+        "&money-log 使用者ID（也可使用 @使用者）",
+    ),
     "give_role": (
         "給予一個或多個身分組；一般模式需要對方同意，force 模式直接給予。",
         "&give_Role 身分組ID[,身分組ID...] 人ID [備註]（強制：&give_Role force 身分組ID[,身分組ID...] 人ID [備註]）",
@@ -75,7 +81,11 @@ COMMAND_INFO = {
 
 def _canonical_command(command: str) -> str:
     command = command.strip().lower().lstrip("&")
-    return "snipe" if command in SNIPE_ALIASES else command
+    if command in SNIPE_ALIASES:
+        return "snipe"
+    if command in MONEY_LOG_ALIASES:
+        return "money-log"
+    return command
 
 
 def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
@@ -111,10 +121,10 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "money-log", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "id", "response")
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "resolve-bet", "money-log", "id", "response")
             if store.has_prefix_command(user_id, command)
         ]
 
@@ -338,6 +348,30 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 view=v2_view_from_embed(result_embed),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            return True
+
+        if command == "money-log":
+            target = arguments.strip()
+            mention_match = USER_MENTION_PATTERN.fullmatch(target)
+            target_id = mention_match.group(1) if mention_match else target
+            if not ID_PATTERN.fullmatch(target_id):
+                await message.author.send(
+                    "用法：&money-log 使用者ID（也可使用 @使用者）",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            logs = await _run_in_thread(store.economy_currency_logs, target_id)
+            try:
+                await message.author.send(
+                    view=money_log_view(target_id, logs),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.Forbidden:
+                await message.channel.send(
+                    "無法傳送貨幣紀錄私人訊息，請先開啟接收伺服器成員私人訊息。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             return True
 
         if command == "sql":
@@ -783,7 +817,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&resolve-bet、&id、&response"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&resolve-bet、&money-log、&id、&response"
         )
         return
 
