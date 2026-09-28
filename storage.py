@@ -85,6 +85,7 @@ class WorshipStore:
                     content TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'fumao_coins',
                     resolved_outcome TEXT,
                     closed_at INTEGER
                 );
@@ -153,6 +154,10 @@ class WorshipStore:
             if "closed_at" not in bet_columns:
                 connection.execute(
                     "ALTER TABLE bets ADD COLUMN closed_at INTEGER"
+                )
+            if "currency" not in bet_columns:
+                connection.execute(
+                    "ALTER TABLE bets ADD COLUMN currency TEXT NOT NULL DEFAULT 'fumao_coins'"
                 )
             migration = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'give_role_permission_migrated'"
@@ -566,6 +571,7 @@ class WorshipStore:
         content: str,
         created_at: int,
         expires_at: int,
+        currency: str,
         options: list[tuple[str, float]],
     ) -> None:
         with self.lock, self._connect() as connection:
@@ -573,8 +579,8 @@ class WorshipStore:
                 """
                 INSERT INTO bets(
                     message_id, guild_id, channel_id, title, content,
-                    created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    created_at, expires_at, currency
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(message_id),
@@ -584,6 +590,7 @@ class WorshipStore:
                     content,
                     int(created_at),
                     int(expires_at),
+                    currency,
                 ),
             )
             connection.executemany(
@@ -602,7 +609,7 @@ class WorshipStore:
             bet = connection.execute(
                 """
                 SELECT message_id, guild_id, channel_id, title, content,
-                       created_at, expires_at, resolved_outcome, closed_at
+                       created_at, expires_at, currency, resolved_outcome, closed_at
                 FROM bets WHERE message_id = ?
                 """,
                 (str(message_id),),
@@ -626,8 +633,9 @@ class WorshipStore:
                 "content": str(bet[4]),
                 "created_at": int(bet[5]),
                 "expires_at": int(bet[6]),
-                "resolved_outcome": bet[7],
-                "closed_at": int(bet[8]) if bet[8] is not None else None,
+                "currency": str(bet[7]),
+                "resolved_outcome": bet[8],
+                "closed_at": int(bet[9]) if bet[9] is not None else None,
                 "options": [(str(row[0]), float(row[1])) for row in options],
             }
 
@@ -666,7 +674,7 @@ class WorshipStore:
         with self.lock, self._connect() as connection:
             self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
-                "SELECT expires_at, resolved_outcome, closed_at FROM bets WHERE message_id = ?",
+                "SELECT expires_at, resolved_outcome, closed_at, currency FROM bets WHERE message_id = ?",
                 (str(message_id),),
             ).fetchone()
             if bet is None:
@@ -688,17 +696,26 @@ class WorshipStore:
             if option is None:
                 raise ValueError("找不到這個下注狀況")
 
+            currency_columns = {
+                "fumao_coins": "fumao_coins",
+                "crystals": "crystals",
+                "grace": "grace",
+            }
+            currency = str(bet[3])
+            currency_column = currency_columns.get(currency)
+            if currency_column is None:
+                raise ValueError("這個賭盤使用了未知的貨幣種類")
             account = self._select_economy_account(connection, str(user_id))
-            if int(account["fumao_coins"]) < int(amount):
-                raise ValueError("芙帽幣不足")
+            if int(account[currency]) < int(amount):
+                raise ValueError("下注貨幣餘額不足")
             connection.execute(
-                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
+                f"UPDATE economy_accounts SET {currency_column} = {currency_column} - ? WHERE user_id = ?",
                 (int(amount), str(user_id)),
             )
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
-                "fumao_coins",
+                currency,
                 -int(amount),
                 f"下注：{option_name}",
                 int(now_ms),
@@ -717,20 +734,30 @@ class WorshipStore:
                 "amount": int(amount),
                 "option_name": option_name,
                 "odds": float(option[0]),
-                "balance": int(account["fumao_coins"]) - int(amount),
+                "balance": int(account[currency]) - int(amount),
+                "currency": currency,
             }
 
     def resolve_bet(self, message_id: str, outcome: str, now_ms: int) -> dict[str, Any]:
         with self.lock, self._connect() as connection:
             self._purge_economy_currency_logs(connection, int(now_ms))
             bet = connection.execute(
-                "SELECT resolved_outcome FROM bets WHERE message_id = ?",
+                "SELECT resolved_outcome, currency FROM bets WHERE message_id = ?",
                 (str(message_id),),
             ).fetchone()
             if bet is None:
                 raise ValueError("找不到這個賭盤")
             if bet[0] is not None:
                 raise ValueError("這個賭盤已經結算")
+            currency_columns = {
+                "fumao_coins": "fumao_coins",
+                "crystals": "crystals",
+                "grace": "grace",
+            }
+            currency = str(bet[1])
+            currency_column = currency_columns.get(currency)
+            if currency_column is None:
+                raise ValueError("這個賭盤使用了未知的貨幣種類")
 
             requested_outcomes = [
                 item.strip()
@@ -785,7 +812,7 @@ class WorshipStore:
                 if payout:
                     self._select_economy_account(connection, str(user_id))
                     connection.execute(
-                        "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
+                        f"UPDATE economy_accounts SET {currency_column} = {currency_column} + ? WHERE user_id = ?",
                         (payout, str(user_id)),
                     )
                     source = (
@@ -796,7 +823,7 @@ class WorshipStore:
                     self._record_economy_currency_change(
                         connection,
                         str(user_id),
-                        "fumao_coins",
+                        currency,
                         payout,
                         source,
                         int(now_ms),

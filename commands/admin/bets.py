@@ -13,7 +13,27 @@ import discord
 from components_v2 import v2_view_from_embed
 
 
-FUMAO_COIN = "<:FumaoCoin:1554060935725973554>"
+BET_CURRENCIES = {
+    "fumao_coins": ("FumaoCoin", "芙帽幣", "<:FumaoCoin:1554060935725973554>"),
+    "crystals": ("Crystal", "水晶", "<:Crystal:1554060934140403815>"),
+    "grace": ("grace", "神恩", "<:grace:1554060937244180542>"),
+}
+BET_CURRENCY_ALIASES = {
+    "1": "fumao_coins",
+    "2": "crystals",
+    "3": "grace",
+    "fumao": "fumao_coins",
+    "fumaocoin": "fumao_coins",
+    "fumao_coin": "fumao_coins",
+    "fumao_coins": "fumao_coins",
+    "芙帽幣": "fumao_coins",
+    "coin": "fumao_coins",
+    "crystal": "crystals",
+    "crystals": "crystals",
+    "水晶": "crystals",
+    "grace": "grace",
+    "神恩": "grace",
+}
 MAX_OPTIONS = 5
 MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 DURATION_PATTERN = re.compile(
@@ -31,6 +51,20 @@ def _format_odds(value: float) -> str:
 def _format_deadline(timestamp_ms: int) -> str:
     deadline = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).astimezone(UTC_PLUS_8)
     return deadline.strftime("%Y-%m-%d %H:%M:%S UTC+8")
+
+
+def _parse_currency(value: str) -> str:
+    currency = BET_CURRENCY_ALIASES.get(value.strip().casefold())
+    if currency is None:
+        raise ValueError("下注貨幣請輸入 `1` 芙帽幣、`2` 水晶或 `3` 神恩")
+    return currency
+
+
+def _currency_display(currency: str) -> tuple[str, str]:
+    info = BET_CURRENCIES.get(currency)
+    if info is None:
+        return currency, f":{currency}:"
+    return info[1], info[2]
 
 
 def _parse_duration(value: str) -> int:
@@ -87,6 +121,7 @@ def _bet_embed(
     content: str,
     options: list[tuple[str, float]],
     expires_at: int,
+    currency: str = "fumao_coins",
     *,
     resolved: str | None = None,
     closed: bool = False,
@@ -97,12 +132,14 @@ def _bet_embed(
         status = "↩️ 已退款"
     else:
         status = f"🏁 結果：{resolved}"
+    currency_label, currency_emoji = _currency_display(currency)
     embed = discord.Embed(
         title=f"🎲 {title}",
         description=(
             f"{content}\n\n"
             f"{status}\n"
-            f"截止時間：{_format_deadline(expires_at)}"
+            f"截止時間：{_format_deadline(expires_at)}\n"
+            f"下注貨幣：{currency_emoji} {currency_label}"
         ),
         color=0xE7A0B4 if resolved is None else 0x95A5A6,
     )
@@ -114,7 +151,7 @@ def _bet_embed(
         ),
         inline=False,
     )
-    embed.set_footer(text="按下狀況按鈕後，會以私人表單輸入下注金額。單位：芙帽幣")
+    embed.set_footer(text=f"按下狀況按鈕後，會以私人表單輸入下注金額。單位：{currency_label}")
     return embed
 
 
@@ -123,6 +160,11 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
         label="下注持續時間",
         placeholder="例如：10s、1m30s、2h、1d",
         max_length=20,
+    )
+    currency_input = discord.ui.TextInput(
+        label="下注貨幣",
+        placeholder="1=芙帽幣，2=水晶，3=神恩",
+        max_length=30,
     )
     title_input = discord.ui.TextInput(
         label="賭盤標題",
@@ -148,6 +190,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
             duration_seconds = _parse_duration(str(self.duration.value))
+            currency = _parse_currency(str(self.currency_input.value))
             title = " ".join(str(self.title_input.value).split())
             content = str(self.content_input.value).strip()
             options = _parse_options(str(self.options_input.value))
@@ -159,11 +202,11 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
 
         created_at = int(time.time() * 1000)
         expires_at = created_at + duration_seconds * 1000
-        bet_view = BetOpenView(self.store, title, content, options, expires_at)
+        bet_view = BetOpenView(self.store, title, content, options, expires_at, currency)
         try:
             message = await self.channel.send(
                 view=v2_view_from_embed(
-                    _bet_embed(title, content, options, expires_at),
+                    _bet_embed(title, content, options, expires_at, currency),
                     legacy_view=bet_view,
                 ),
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -177,6 +220,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
                 title,
                 content,
                 options,
+                currency,
             )
             bet_view.schedule_expiry()
         except Exception:
@@ -200,6 +244,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
         title: str,
         content: str,
         options: list[tuple[str, float]],
+        currency: str,
     ) -> None:
         import asyncio
 
@@ -212,6 +257,7 @@ class BetCreateModal(discord.ui.Modal, title="建立賭盤"):
             content,
             created_at,
             expires_at,
+            currency,
             options,
         )
 
@@ -236,16 +282,17 @@ class BetSetupView(discord.ui.View):
 
 class BetAmountModal(discord.ui.Modal, title="下注確認"):
     amount = discord.ui.TextInput(
-        label="下注芙帽幣數量",
+        label="下注數量",
         placeholder="請輸入正整數，例如：500",
         max_length=20,
     )
 
-    def __init__(self, store: Any, message_id: str, option_name: str) -> None:
+    def __init__(self, store: Any, message_id: str, option_name: str, currency: str) -> None:
         super().__init__()
         self.store = store
         self.message_id = message_id
         self.option_name = option_name
+        self.currency = currency
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
@@ -275,9 +322,9 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
             title="✅ 下注成功",
             description=(
                 f"狀況：**{self.option_name}**\n"
-                f"下注：**{amount:,}** {FUMAO_COIN} 芙帽幣\n"
+                f"下注：**{amount:,}** {_currency_display(self.currency)[1]} {_currency_display(self.currency)[0]}\n"
                 f"倍率：**{_format_odds(result['odds'])}**\n"
-                f"剩餘餘額：**{result['balance']:,}** {FUMAO_COIN} 芙帽幣"
+                f"剩餘餘額：**{result['balance']:,}** {_currency_display(self.currency)[1]} {_currency_display(self.currency)[0]}"
             ),
             color=0x2ECC71,
         )
@@ -295,6 +342,7 @@ class BetOpenView(discord.ui.View):
         content: str,
         options: list[tuple[str, float]],
         expires_at: int,
+        currency: str = "fumao_coins",
     ) -> None:
         super().__init__(timeout=None)
         self.store = store
@@ -302,6 +350,7 @@ class BetOpenView(discord.ui.View):
         self.content = content
         self.options = options
         self.expires_at = expires_at
+        self.currency = currency
         self.message_id: str | None = None
         self.message: discord.Message | None = None
         self.closed = False
@@ -351,6 +400,7 @@ class BetOpenView(discord.ui.View):
                             self.content,
                             self.options,
                             self.expires_at,
+                            self.currency,
                             closed=True,
                         ),
                         legacy_view=self,
@@ -370,7 +420,7 @@ class BetOpenView(discord.ui.View):
                 await self.close()
                 return
             await interaction.response.send_modal(
-                BetAmountModal(self.store, self.message_id, option_name)
+                BetAmountModal(self.store, self.message_id, option_name, self.currency)
             )
 
         return callback
@@ -400,6 +450,7 @@ async def stop_bet_message(
         bet["content"],
         bet["options"],
         bet["expires_at"],
+        bet["currency"],
     )
     bet_view.message_id = str(message_id)
     bet_view.message = target
@@ -409,6 +460,7 @@ async def stop_bet_message(
         bet["content"],
         bet["options"],
         bet["expires_at"],
+        bet["currency"],
         closed=True,
     )
 
@@ -448,6 +500,7 @@ async def resolve_bet_message(
         bet["content"],
         bet["options"],
         bet["expires_at"],
+        bet["currency"],
         resolved=(
             result["outcome"]
             if result["outcome"].casefold() == "return"
@@ -455,17 +508,22 @@ async def resolve_bet_message(
         ),
     )
     if result["outcome"].casefold() == "return":
+        currency_label, currency_emoji = _currency_display(bet["currency"])
         resolved_embed.add_field(
             name="結算結果",
-            value=f"已退還 **{result['refunded']:,}** {FUMAO_COIN} 芙帽幣。",
+            value=(
+                f"已退還 **{result['refunded']:,}** "
+                f"{currency_emoji} {currency_label}。"
+            ),
             inline=False,
         )
     else:
+        currency_label, currency_emoji = _currency_display(bet["currency"])
         resolved_embed.add_field(
             name="結算結果",
             value=(
                 f"中獎人數：**{result['winners']}**\n"
-                f"派發獎金：**{result['paid']:,}** {FUMAO_COIN} 芙帽幣。"
+                f"派發獎金：**{result['paid']:,}** {currency_emoji} {currency_label}。"
             ),
             inline=False,
         )

@@ -26,10 +26,10 @@ USER_MENTION_PATTERN = re.compile(r"^<@!?(\d{17,20})>$")
 ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
-PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "stop-bet", "resolve-bet", "money-log"})
+PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "stop-bet", "resolve-bet", "log"})
 OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
-MONEY_LOG_ALIASES = frozenset({"money-log", "moneylog"})
+MONEY_LOG_ALIASES = frozenset({"log", "money-log", "moneylog"})
 CURRENCY_ALIASES = {
     "fumao": "fumao_coins",
     "fumaocoin": "fumao_coins",
@@ -65,9 +65,9 @@ COMMAND_INFO = {
         "立即停止賭盤下注並停用原卡片上的所有下注按鈕。",
         "&stop-bet 訊息ID",
     ),
-    "money-log": (
-        "以私人訊息查看某人最近 3 天的貨幣變動紀錄。",
-        "&money-log 使用者ID（也可使用 @使用者）",
+    "log": (
+        "查看某人最近 3 天的貨幣變動紀錄。",
+        "&log 使用者ID（也可使用 @使用者）",
     ),
     "give_role": (
         "給予一個或多個身分組；一般模式需要對方同意，force 模式直接給予。",
@@ -88,7 +88,7 @@ def _canonical_command(command: str) -> str:
     if command in SNIPE_ALIASES:
         return "snipe"
     if command in MONEY_LOG_ALIASES:
-        return "money-log"
+        return "log"
     return command
 
 
@@ -125,11 +125,15 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "money-log", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "log", "id", "response", "sql", "grant", "revoke", "perms"]
     else:
         commands = ["help"] + [
-            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "money-log", "id", "response")
-            if store.has_prefix_command(user_id, command)
+            command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "stop-bet", "resolve-bet", "log", "id", "response")
+            if (
+                store.has_prefix_command(user_id, command)
+                or command == "log"
+                and store.has_prefix_command(user_id, "money-log")
+            )
         ]
 
     lines = ["管理員指令列表", ""]
@@ -150,6 +154,10 @@ def _has_permission(store: Any, user_id: str, command: str) -> bool:
         return bool(store.list_prefix_commands(user_id))
     if command in OWNER_ONLY_COMMANDS:
         return False
+    if command == "log":
+        return store.has_prefix_command(user_id, "log") or store.has_prefix_command(
+            user_id, "money-log"
+        )
     return store.has_prefix_command(user_id, command)
 
 
@@ -377,28 +385,22 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             )
             return True
 
-        if command == "money-log":
+        if command == "log":
             target = arguments.strip()
             mention_match = USER_MENTION_PATTERN.fullmatch(target)
             target_id = mention_match.group(1) if mention_match else target
             if not ID_PATTERN.fullmatch(target_id):
-                await message.author.send(
-                    "用法：&money-log 使用者ID（也可使用 @使用者）",
+                await message.channel.send(
+                    "用法：&log 使用者ID（也可使用 @使用者）",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
                 return True
 
             logs = await _run_in_thread(store.economy_currency_logs, target_id)
-            try:
-                await message.author.send(
-                    view=money_log_view(target_id, logs),
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.Forbidden:
-                await message.channel.send(
-                    "無法傳送貨幣紀錄私人訊息，請先開啟接收伺服器成員私人訊息。",
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+            await message.channel.send(
+                view=money_log_view(target_id, logs),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return True
 
         if command == "sql":
@@ -854,7 +856,7 @@ async def _handle_permission_command(
         await message.author.send(
             "不可授權的指令："
             + "、".join(f"&{name}" for name in invalid)
-            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&stop-bet、&resolve-bet、&money-log、&id、&response"
+            + "。可授權：&say、&button、&react、&snipe、&delete、&give、&give_Role、&create-bet、&stop-bet、&resolve-bet、&log、&id、&response"
         )
         return
 
