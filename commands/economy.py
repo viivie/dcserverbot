@@ -29,12 +29,10 @@ ROBBERY_COOLDOWN_SECONDS = 1.0
 CURRENCY_COOLDOWNS: dict[int, float] = {}
 CURRENCY_EMOJIS = {
     "FumaoCoin": "<:FumaoCoin:1554060935725973554>",
-    "YuzuCoin": "<:yuzucoin:1471758283403431947>",
     "Crystal": "<:Crystal:1554060934140403815>",
     "grace": "<:grace:1554060937244180542>",
 }
 CHECKIN_TITLE_EMOJI = "<:mura_excited:1429257164811407571>"
-CHECKIN_CARD_LINE = "─" * 42
 ROBBERY_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "economy"
 
 
@@ -128,9 +126,9 @@ def _period_time(now: datetime) -> str:
 
 
 def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
-    coin = _currency_emoji(guild, "YuzuCoin")
+    coin = _currency_emoji(guild, "FumaoCoin")
     return (
-        f"當前餘額：{_number(account['fumao_coins'])} {coin} 柚子幣．"
+        f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
         f"簽到等級：Lv.{account['level']}"
     )
 
@@ -251,7 +249,7 @@ def _checkin_sections(
     account: dict[str, Any],
     kind: str,
 ) -> list[str]:
-    coin = _currency_emoji(guild, "YuzuCoin")
+    coin = _currency_emoji(guild, "FumaoCoin")
     if not account.get("claimed"):
         if kind == "daily":
             description = "今天已經完成每日簽到，明天再來吧。"
@@ -270,24 +268,21 @@ def _checkin_sections(
         accumulated = int(account["accumulated_hours"])
         accumulated_reward = base_reward * accumulated
         calculation_lines = [
-            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 柚子幣",
+            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 芙帽幣",
             f"每小時倍率　　　　{_multiplier(multiplier)}",
         ]
     else:
         calculation_lines = [f"每日倍率　　　　{_multiplier(multiplier)}"]
 
     balance = (
-        f"當前餘額：{_number(account['fumao_coins'])} {coin} 柚子幣．"
+        f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
         f"簽到等級：Lv.{account['level']}"
     )
     return [
-        (
-            f"## {CHECKIN_TITLE_EMOJI} **{'每小時' if kind == 'hourly' else '每日'}簽到成功**\n"
-            f"{CHECKIN_CARD_LINE}"
-        ),
-        f"獲得 **{_number(reward)}** {coin} 柚子幣\n\n" + "\n".join(calculation_lines),
-        f"{CHECKIN_CARD_LINE}\n合計　　　　　　　**{_number(reward)}** {coin} 柚子幣",
-        f"{CHECKIN_CARD_LINE}\n{balance}\n\nUTC+8",
+        f"## {CHECKIN_TITLE_EMOJI} **{'每小時' if kind == 'hourly' else '每日'}簽到成功**",
+        f"獲得 **{_number(reward)}** {coin} 芙帽幣\n\n" + "\n".join(calculation_lines),
+        f"合計　　　　　　　**{_number(reward)}** {coin} 芙帽幣",
+        f"{balance}\n\nUTC+8",
     ]
 
 
@@ -331,13 +326,13 @@ def _quick_checkin_sections(
     hourly: dict[str, Any],
     current_account: dict[str, Any],
 ) -> list[str]:
-    coin = _currency_emoji(guild, "YuzuCoin")
+    coin = _currency_emoji(guild, "FumaoCoin")
 
     if daily.get("claimed"):
         daily_value = (
-            f"獲得 **{_number(daily['reward'])}** {coin} 柚子幣\n"
+            f"獲得 **{_number(daily['reward'])}** {coin} 芙帽幣\n"
             f"每日倍率　　　　{_multiplier(float(daily['multiplier']))}\n"
-            f"合計　　　　　　　**{_number(daily['reward'])}** {coin} 柚子幣"
+            f"合計　　　　　　　**{_number(daily['reward'])}** {coin} 芙帽幣"
         )
         daily_name = "每日簽到　成功"
     else:
@@ -347,10 +342,10 @@ def _quick_checkin_sections(
         accumulated = int(hourly["accumulated_hours"])
         accumulated_reward = int(hourly["base_reward"]) * accumulated
         hourly_value = (
-            f"獲得 **{_number(hourly['reward'])}** {coin} 柚子幣\n"
-            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 柚子幣\n"
+            f"獲得 **{_number(hourly['reward'])}** {coin} 芙帽幣\n"
+            f"累積 {accumulated} 小時獎勵　　{_number(accumulated_reward)} 芙帽幣\n"
             f"每小時倍率　　　　{_multiplier(float(hourly['multiplier']))}\n"
-            f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 柚子幣"
+            f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 芙帽幣"
         )
         hourly_name = "每小時簽到　成功"
     else:
@@ -367,17 +362,17 @@ def _quick_checkin_sections(
         if result.get("claimed")
     )
     received_text = (
-        f"本次獲得 **{_number(received)}** {coin} 柚子幣\n"
+        f"本次獲得 **{_number(received)}** {coin} 芙帽幣\n"
         if received
-        else "本次沒有新的柚子幣獎勵\n"
+        else "本次沒有新的芙帽幣獎勵\n"
     )
     return [
-        f"## ⚡ **快速簽到**\n{CHECKIN_CARD_LINE}",
+        "## ⚡ **快速簽到**",
         f"### {daily_name}\n{daily_value}",
         f"### {hourly_name}\n{hourly_value}",
         (
             f"### 簽到結果\n{received_text}"
-            f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 柚子幣．"
+            f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 芙帽幣．"
             f"簽到等級：Lv.{current_account['level']}\n"
             f"今天 {_period_time(datetime.now(TAIPEI))}"
         ),
