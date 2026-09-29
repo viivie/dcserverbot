@@ -333,6 +333,9 @@ def _checkin_sections(
         ]
     else:
         calculation_lines = [f"每日簽到倍率　　　{_multiplier(multiplier)}"]
+    pvp_multiplier = float(account.get("pvp_multiplier", 1.0))
+    if pvp_multiplier > 1.0:
+        calculation_lines.append(f"PvP 簽到加成　　　{_multiplier(pvp_multiplier)}")
 
     balance = (
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
@@ -392,10 +395,14 @@ def _quick_checkin_sections(
     coin = _currency_emoji(guild, "FumaoCoin")
 
     if daily.get("claimed"):
+        daily_bonus = ""
+        if float(daily.get("pvp_multiplier", 1.0)) > 1.0:
+            daily_bonus = f"\nPvP 簽到加成　　　{_multiplier(float(daily['pvp_multiplier']))}"
         daily_value = (
             f"獲得 **{_number(daily['reward'])}** {coin} 芙帽幣\n"
             f"每日簽到倍率　　　{_multiplier(float(daily['multiplier']))}\n"
             f"合計　　　　　　　**{_number(daily['reward'])}** {coin} 芙帽幣"
+            f"{daily_bonus}"
         )
         daily_name = "每日簽到　成功"
     else:
@@ -410,11 +417,15 @@ def _quick_checkin_sections(
             if accumulated >= saved_hours
             else ""
         )
+        hourly_bonus = ""
+        if float(hourly.get("pvp_multiplier", 1.0)) > 1.0:
+            hourly_bonus = f"\nPvP 簽到加成　　　{_multiplier(float(hourly['pvp_multiplier']))}"
         hourly_value = (
             f"獲得 **{_number(hourly['reward'])}** {coin} 芙帽幣\n"
             f"累積 {accumulated} 小時獎勵{storage_note}　　{_number(accumulated_reward)} 芙帽幣\n"
             f"每小時簽到倍率　　{_multiplier(float(hourly['multiplier']))}\n"
             f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 芙帽幣"
+            f"{hourly_bonus}"
         )
         hourly_name = "每小時簽到　成功"
     else:

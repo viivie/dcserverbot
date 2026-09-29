@@ -110,96 +110,282 @@ class UpgradeView(discord.ui.View):
         return callback
 
 
-class ArtifactView(discord.ui.View):
-    def __init__(self, pvp: PvpStore, user_id: str, artifacts: list[dict[str, Any]], *, timeout: float = 300) -> None:
+ARTIFACT_STAT_LABELS = {
+    "hp": "生命值",
+    "atk": "攻擊力",
+    "def": "防禦力",
+    "hp_percent": "生命值%",
+    "atk_percent": "攻擊力%",
+    "def_percent": "防禦力%",
+    "crit_rate": "暴擊率",
+    "crit_damage": "暴擊傷害",
+}
+
+
+def _artifact_stat_text(stat: str, value: float) -> str:
+    label = ARTIFACT_STAT_LABELS.get(stat, stat)
+    if stat.endswith("_percent") or stat in {"crit_rate", "crit_damage"}:
+        return f"{label}：{value * 100:.2f}%"
+    return f"{label}：{value:g}"
+
+
+def _artifact_list_embed(
+    artifacts: list[dict[str, Any]], page: int, title: str = "🧿 聖遺物列表"
+) -> discord.Embed:
+    page_count = max(1, (len(artifacts) + 9) // 10)
+    page = max(0, min(int(page), page_count - 1))
+    page_items = artifacts[page * 10:(page + 1) * 10]
+    lines = [f"已裝備 {sum(1 for item in artifacts if item.get('equipped'))} / 5 件"]
+    if not page_items:
+        lines.append("\n目前沒有聖遺物，請先挑戰 `/pvp 秘境`。")
+    else:
+        lines.extend(
+            (
+                f"{'✅' if item['equipped'] else '　'} `#{item['id']}` "
+                f"{artifact_color(item['color'])['label']} {item['slot']} Lv.{item['level']}\n"
+                f"　{_artifact_stat_text(item['main_stat'], float(item['main_value']))}　"
+                f"副詞條 {len(item.get('sub_stats', {}))} 條"
+            )
+            for item in page_items
+        )
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(lines),
+        color=COLOR,
+    )
+    embed.set_footer(text=f"第 {page + 1} / {page_count} 頁｜按下聖遺物按鈕查看詳細介面")
+    return embed
+
+
+def _artifact_detail_embed(
+    artifact: dict[str, Any],
+    upgrade_note: str | None = None,
+    title: str = "🧿 聖遺物詳細資料",
+) -> discord.Embed:
+    color = artifact_color(str(artifact["color"]))
+    lines = [
+        f"{color['label']}　**{artifact['slot']}**　Lv.{artifact['level']} / {color['max_level']}",
+        f"套裝：**{artifact.get('set_id') or '無套裝'}**",
+        "",
+        f"主詞條\n> {_artifact_stat_text(artifact['main_stat'], float(artifact['main_value']))}",
+        "副詞條",
+    ]
+    if artifact.get("sub_stats"):
+        lines.extend(f"> {_artifact_stat_text(stat, float(value))}" for stat, value in artifact["sub_stats"].items())
+    else:
+        lines.append("> 無副詞條")
+    costs = PVP_CONFIG["artifact_upgrade_costs"].get(str(artifact["color"]), [])
+    level = int(artifact["level"])
+    if level < len(costs):
+        lines.extend(["", f"下一級升級費用：**{_number(costs[level])}** 芙帽幣"])
+    else:
+        lines.extend(["", "✅ 已達最高等級"])
+    if upgrade_note:
+        lines.extend(["", upgrade_note])
+    embed = discord.Embed(title=title, description="\n".join(lines), color=COLOR)
+    embed.set_footer(text=f"聖遺物 ID：{artifact['id']}｜升級時會套用目前顯示的預覽")
+    return embed
+
+
+class ArtifactListView(discord.ui.View):
+    def __init__(self, pvp: PvpStore, user_id: str, artifacts: list[dict[str, Any]], page: int = 0, *, timeout: float = 300) -> None:
         super().__init__(timeout=timeout)
         self.pvp = pvp
         self.user_id = str(user_id)
-        for artifact in artifacts[:8]:
+        self.artifacts = artifacts
+        self.page = max(0, min(int(page), max(0, (len(artifacts) - 1) // 10)))
+        page_items = artifacts[self.page * 10:(self.page + 1) * 10]
+        for artifact in page_items:
             artifact_id = int(artifact["id"])
-            equip = discord.ui.Button(
-                label=f"裝備 #{artifact_id}",
+            button = discord.ui.Button(
+                label=f"#{artifact_id} {artifact['slot']} Lv.{artifact['level']}",
                 style=discord.ButtonStyle.success if artifact["equipped"] else discord.ButtonStyle.secondary,
-                custom_id=f"pvp-equip-{artifact_id}",
+                custom_id=f"pvp-artifact-select-{artifact_id}",
             )
-            equip.callback = self._equip_callback(artifact_id)
-            self.add_item(equip)
-            color = artifact_color(str(artifact["color"]))
-            if int(artifact["level"]) < int(color["max_level"]):
-                upgrade = discord.ui.Button(label=f"強化 #{artifact_id}", style=discord.ButtonStyle.primary, custom_id=f"pvp-art-up-{artifact_id}")
-                upgrade.callback = self._upgrade_callback(artifact)
-                self.add_item(upgrade)
-            salvage = discord.ui.Button(label=f"分解 #{artifact_id}", style=discord.ButtonStyle.danger, custom_id=f"pvp-salvage-{artifact_id}")
-            salvage.callback = self._salvage_callback(artifact_id)
-            self.add_item(salvage)
+            button.callback = self._select_callback(artifact_id)
+            self.add_item(button)
+        if self.page > 0:
+            previous = discord.ui.Button(label="上一頁", style=discord.ButtonStyle.primary, custom_id="pvp-artifact-page-prev")
+            previous.callback = self._page_callback(self.page - 1)
+            self.add_item(previous)
+        if (self.page + 1) * 10 < len(artifacts):
+            following = discord.ui.Button(label="下一頁", style=discord.ButtonStyle.primary, custom_id="pvp-artifact-page-next")
+            following.callback = self._page_callback(self.page + 1)
+            self.add_item(following)
 
-    async def _refresh(self, interaction: discord.Interaction, title: str = "🧿 聖遺物") -> None:
-        artifacts = await asyncio.to_thread(self.pvp.artifacts, self.user_id)
-        embed = _artifacts_embed(artifacts, title)
-        await interaction.edit_original_response(view=v2_view_from_embed(embed, legacy_view=ArtifactView(self.pvp, self.user_id, artifacts)))
-
-    def _equip_callback(self, artifact_id: int):
+    def _page_callback(self, page: int):
         async def callback(interaction: discord.Interaction) -> None:
             if str(interaction.user.id) != self.user_id:
                 await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
                 return
             await interaction.response.defer()
-            try:
-                await asyncio.to_thread(self.pvp.equip_artifact, self.user_id, artifact_id)
-                await self._refresh(interaction)
-            except (ValueError, discord.NotFound, discord.HTTPException) as error:
-                if isinstance(error, ValueError):
-                    await interaction.followup.send(str(error), ephemeral=True)
-
-        return callback
-
-    def _upgrade_callback(self, artifact: dict[str, Any]):
-        async def callback(interaction: discord.Interaction) -> None:
-            if str(interaction.user.id) != self.user_id:
-                await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
-                return
-            await interaction.response.defer()
-            color = str(artifact["color"])
-            level = int(artifact["level"])
-            costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
-            if level >= len(costs):
-                await interaction.followup.send("這件聖遺物已達等級上限。", ephemeral=True)
-                return
-            roll_stat = None
-            roll_amount = 0.0
-            if level + 1 in (4, 8, 12, 16, 20):
-                candidates = list(artifact.get("sub_stats", {}))
-                if candidates:
-                    roll_stat = random.choice(candidates)
-                    from .engine import _sub_value
-                    roll_amount = _sub_value(roll_stat, color)
-            try:
-                await asyncio.to_thread(
-                    self.pvp.upgrade_artifact,
-                    self.user_id, int(artifact["id"]), int(artifact_color(color)["max_level"]),
-                    int(costs[level]), roll_stat, roll_amount, int(time.time() * 1000),
+            artifacts = await asyncio.to_thread(self.pvp.artifacts, self.user_id)
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _artifact_list_embed(artifacts, page),
+                    legacy_view=ArtifactListView(self.pvp, self.user_id, artifacts, page),
                 )
-                await self._refresh(interaction, "🧿 聖遺物強化完成")
-            except (ValueError, discord.NotFound, discord.HTTPException) as error:
-                if isinstance(error, ValueError):
-                    await interaction.followup.send(str(error), ephemeral=True)
+            )
 
         return callback
 
-    def _salvage_callback(self, artifact_id: int):
+    def _select_callback(self, artifact_id: int):
         async def callback(interaction: discord.Interaction) -> None:
             if str(interaction.user.id) != self.user_id:
                 await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
                 return
             await interaction.response.defer()
-            try:
-                refund = await asyncio.to_thread(self.pvp.salvage_artifact, self.user_id, artifact_id, int(time.time() * 1000))
-                await self._refresh(interaction, f"🧿 聖遺物已分解，返還 {_number(refund)} 芙帽幣")
-            except (ValueError, discord.NotFound, discord.HTTPException) as error:
-                if isinstance(error, ValueError):
-                    await interaction.followup.send(str(error), ephemeral=True)
+            artifacts = await asyncio.to_thread(self.pvp.artifacts, self.user_id)
+            artifact = next((item for item in artifacts if int(item["id"]) == artifact_id), None)
+            if artifact is None:
+                await interaction.followup.send("找不到這件聖遺物，列表可能已經更新。", ephemeral=True)
+                return
+            detail = ArtifactDetailView(self.pvp, self.user_id, artifact, self.page)
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    detail.embed,
+                    legacy_view=detail,
+                )
+            )
 
         return callback
+
+
+class ArtifactDetailView(discord.ui.View):
+    def __init__(self, pvp: PvpStore, user_id: str, artifact: dict[str, Any], page: int, *, timeout: float = 300) -> None:
+        super().__init__(timeout=timeout)
+        self.pvp = pvp
+        self.user_id = str(user_id)
+        self.artifact = artifact
+        self.page = int(page)
+        color = str(artifact["color"])
+        level = int(artifact["level"])
+        costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
+
+        equip = discord.ui.Button(
+            label="已裝備" if artifact["equipped"] else "裝備",
+            style=discord.ButtonStyle.success,
+            disabled=bool(artifact["equipped"]),
+            custom_id=f"pvp-artifact-equip-{artifact['id']}",
+        )
+        equip.callback = self._equip_callback
+        self.add_item(equip)
+        upgrade = discord.ui.Button(
+            label="確認升級",
+            style=discord.ButtonStyle.primary,
+            disabled=level >= len(costs),
+            custom_id=f"pvp-artifact-upgrade-{artifact['id']}",
+        )
+        upgrade.callback = self._upgrade_callback
+        self.add_item(upgrade)
+        salvage = discord.ui.Button(label="分解", style=discord.ButtonStyle.danger, custom_id=f"pvp-artifact-salvage-{artifact['id']}")
+        salvage.callback = self._salvage_callback
+        self.add_item(salvage)
+        back = discord.ui.Button(label="返回列表", style=discord.ButtonStyle.secondary, custom_id="pvp-artifact-list-back")
+        back.callback = self._back_callback
+        self.add_item(back)
+
+    @property
+    def embed(self) -> discord.Embed:
+        return _artifact_detail_embed(self.artifact)
+
+    async def _show_detail(
+        self,
+        interaction: discord.Interaction,
+        title: str = "🧿 聖遺物詳細資料",
+        upgrade_note: str | None = None,
+    ) -> None:
+        artifacts = await asyncio.to_thread(self.pvp.artifacts, self.user_id)
+        artifact = next((item for item in artifacts if int(item["id"]) == int(self.artifact["id"])), None)
+        if artifact is None:
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _artifact_list_embed(artifacts, self.page),
+                    legacy_view=ArtifactListView(self.pvp, self.user_id, artifacts, self.page),
+                )
+            )
+            return
+        detail = ArtifactDetailView(self.pvp, self.user_id, artifact, self.page)
+        await interaction.edit_original_response(
+            view=v2_view_from_embed(
+                _artifact_detail_embed(artifact, upgrade_note, title),
+                legacy_view=detail,
+            )
+        )
+
+    async def _equip_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            await asyncio.to_thread(self.pvp.equip_artifact, self.user_id, int(self.artifact["id"]))
+            await self._show_detail(interaction, "🧿 已裝備聖遺物")
+        except (ValueError, discord.NotFound, discord.HTTPException) as error:
+            if isinstance(error, ValueError):
+                await interaction.followup.send(str(error), ephemeral=True)
+
+    async def _upgrade_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
+            return
+        await interaction.response.defer()
+        color = str(self.artifact["color"])
+        level = int(self.artifact["level"])
+        costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
+        roll_stat = None
+        roll_amount = 0.0
+        if level + 1 in (4, 8, 12, 16, 20):
+            candidates = list(self.artifact.get("sub_stats", {}))
+            if candidates:
+                roll_stat = random.choice(candidates)
+                from .engine import _sub_value
+                roll_amount = _sub_value(roll_stat, color)
+        try:
+            await asyncio.to_thread(
+                self.pvp.upgrade_artifact,
+                self.user_id, int(self.artifact["id"]), int(artifact_color(color)["max_level"]),
+                int(costs[level]), roll_stat, roll_amount, int(time.time() * 1000),
+            )
+            if roll_stat:
+                upgrade_note = f"✅ 本次升級增加：**{_artifact_stat_text(roll_stat, roll_amount)}**"
+            else:
+                upgrade_note = "✅ 本次升級沒有增加副詞條"
+            await self._show_detail(interaction, "🧿 聖遺物強化完成", upgrade_note)
+        except (IndexError, ValueError, discord.NotFound, discord.HTTPException) as error:
+            if isinstance(error, (IndexError, ValueError)):
+                await interaction.followup.send(str(error), ephemeral=True)
+
+    async def _salvage_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            refund = await asyncio.to_thread(self.pvp.salvage_artifact, self.user_id, int(self.artifact["id"]), int(time.time() * 1000))
+            artifacts = await asyncio.to_thread(self.pvp.artifacts, self.user_id)
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _artifact_list_embed(artifacts, self.page, f"🧿 已分解，返還 {_number(refund)} 芙帽幣"),
+                    legacy_view=ArtifactListView(self.pvp, self.user_id, artifacts, self.page),
+                )
+            )
+        except (ValueError, discord.NotFound, discord.HTTPException) as error:
+            if isinstance(error, ValueError):
+                await interaction.followup.send(str(error), ephemeral=True)
+
+    async def _back_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
+            return
+        await interaction.response.defer()
+        artifacts = await asyncio.to_thread(self.pvp.artifacts, self.user_id)
+        await interaction.edit_original_response(
+            view=v2_view_from_embed(
+                _artifact_list_embed(artifacts, self.page),
+                legacy_view=ArtifactListView(self.pvp, self.user_id, artifacts, self.page),
+            )
+        )
 
 
 class DomainView(discord.ui.View):
@@ -277,27 +463,6 @@ class DomainSelectView(discord.ui.View):
             )
 
         return callback
-
-
-def _artifacts_embed(artifacts: list[dict[str, Any]], title: str = "🧿 聖遺物") -> discord.Embed:
-    equipped = [item for item in artifacts if item.get("equipped")]
-    lines = ["已裝備："]
-    if equipped:
-        lines.extend(
-            f"{artifact_color(item['color'])['label']} {item['slot']} Lv.{item['level']}　{item['main_stat']} {item['main_value']:g}"
-            for item in equipped
-        )
-    else:
-        lines.append("尚未裝備聖遺物。")
-    lines.append(f"\n背包：**{len(artifacts)}** / 5 個裝備欄位（可持有數量不限）")
-    for item in artifacts[:8]:
-        lines.append(
-            f"#{item['id']} {artifact_color(item['color'])['label']} {item['slot']} Lv.{item['level']}"
-            f"　副詞條 {len(item.get('sub_stats', {}))} 條"
-        )
-    embed = discord.Embed(title=title, description="\n".join(lines), color=COLOR)
-    embed.set_footer(text="升級成本與詞條規則可在 commands/pvp/json 修改")
-    return embed
 
 
 def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: CommandContext) -> None:
@@ -387,8 +552,8 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
         artifacts = await asyncio.to_thread(store.artifacts, str(interaction.user.id))
         await interaction.response.send_message(
             view=v2_view_from_embed(
-                _artifacts_embed(artifacts),
-                legacy_view=ArtifactView(store, str(interaction.user.id), artifacts),
+                _artifact_list_embed(artifacts, 0),
+                legacy_view=ArtifactListView(store, str(interaction.user.id), artifacts),
             ),
             ephemeral=True,
         )

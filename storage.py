@@ -468,6 +468,26 @@ class WorshipStore:
                 for row in rows
             ]
 
+    @staticmethod
+    def _pvp_bonus_multiplier(
+        connection: sqlite3.Connection,
+        user_id: str,
+        level: int,
+    ) -> float:
+        """Return the PvP reward bonus for a user who currently has PvP enabled."""
+        try:
+            row = connection.execute(
+                "SELECT enabled FROM pvp_profiles WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # The PvP command module creates this table during command registration.
+            return 1.0
+        if row is None or not bool(row[0]):
+            return 1.0
+        bounded_level = max(1, min(int(level), 30))
+        return 1.5 + (bounded_level - 1) * (1.5 / 29)
+
     def claim_daily(
         self,
         user_id: str,
@@ -485,7 +505,10 @@ class WorshipStore:
                 account["reward"] = 0
                 return account
 
-            reward = int(round(base_reward * random_multiplier * multiplier))
+            pvp_multiplier = self._pvp_bonus_multiplier(
+                connection, str(user_id), int(account["level"])
+            )
+            reward = int(round(base_reward * random_multiplier * multiplier * pvp_multiplier))
             connection.execute(
                 """
                 UPDATE economy_accounts
@@ -508,6 +531,7 @@ class WorshipStore:
             account["base_reward"] = base_reward
             account["random_multiplier"] = random_multiplier
             account["multiplier"] = multiplier
+            account["pvp_multiplier"] = pvp_multiplier
             return account
 
     def claim_hourly(
@@ -542,7 +566,10 @@ class WorshipStore:
                 return account
 
             accumulated_hours = min(accumulated_hours, max(1, int(saved_hours)))
-            reward = int(round(base_reward * accumulated_hours * multiplier))
+            pvp_multiplier = self._pvp_bonus_multiplier(
+                connection, str(user_id), int(account["level"])
+            )
+            reward = int(round(base_reward * accumulated_hours * multiplier * pvp_multiplier))
             connection.execute(
                 """
                 UPDATE economy_accounts
@@ -564,6 +591,7 @@ class WorshipStore:
             account["reward"] = reward
             account["base_reward"] = base_reward
             account["multiplier"] = multiplier
+            account["pvp_multiplier"] = pvp_multiplier
             account["accumulated_hours"] = accumulated_hours
             return account
 
@@ -1068,6 +1096,12 @@ class WorshipStore:
                     )
                 elif str(option_name) in winning_odds:
                     payout = int(round(amount * winning_odds[str(option_name)]))
+                    if entry_currency == "fumao_coins":
+                        account = self._select_economy_account(connection, str(user_id))
+                        pvp_multiplier = self._pvp_bonus_multiplier(
+                            connection, str(user_id), int(account["level"])
+                        )
+                        payout = int(round(payout * pvp_multiplier))
                     paid += payout
                     winners += 1
                     paid_by_currency[entry_currency] = (
