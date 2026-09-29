@@ -532,6 +532,47 @@ class WorshipStore:
             )
         return True
 
+    def pvp_spending_preview(
+        self,
+        user_id: str,
+        amount: int,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Preview whether an economy spend would force-close the user's PvP."""
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        with self.lock, self._connect() as connection:
+            try:
+                self._refresh_pvp_state(connection, str(user_id), now)
+                profile = connection.execute(
+                    "SELECT enabled, baseline_coins FROM pvp_profiles WHERE user_id = ?",
+                    (str(user_id),),
+                ).fetchone()
+                account = self._select_economy_account(connection, str(user_id))
+            except sqlite3.OperationalError:
+                return {
+                    "enabled": False,
+                    "current": int(amount),
+                    "spend": max(0, int(amount)),
+                    "after": 0,
+                    "threshold": 0.0,
+                    "will_force_close": False,
+                }
+            current = int(account["fumao_coins"])
+            spend = max(0, int(amount))
+            pvp_config = _pvp_economy_config()
+            threshold = float(profile[1]) * float(
+                pvp_config.get("rules", {}).get("forced_close_threshold", 0.15)
+            ) if profile is not None else 0.0
+            after = current - spend
+            return {
+                "enabled": bool(profile and profile[0]),
+                "current": current,
+                "spend": spend,
+                "after": after,
+                "threshold": threshold,
+                "will_force_close": bool(profile and profile[0] and after < threshold),
+            }
+
     @staticmethod
     def _pvp_bonus_multiplier(
         connection: sqlite3.Connection,

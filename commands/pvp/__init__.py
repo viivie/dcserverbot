@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 import discord
 
@@ -60,6 +60,20 @@ def _toggle_error_text(result: dict[str, Any]) -> str:
         remaining = _remaining_text(int(time.time() * 1000) + remaining_ms)
         return f"PvP 正在冷卻中（{cooldown_type}冷卻），請等待 **{remaining}** 後再開啟。"
     return "目前無法變更 PvP 狀態。"
+
+
+def _pvp_spend_warning(preview: dict[str, Any]) -> discord.Embed:
+    return discord.Embed(
+        title="⚠️ 確認花費",
+        description=(
+            f"這次將花費 **{_number(preview['spend'])}** 芙帽幣。\n"
+            f"花費後餘額：**{_number(preview['after'])}** 芙帽幣\n"
+            f"PvP 強制關閉門檻：**{_number(preview['threshold'])}** 芙帽幣\n\n"
+            "花費後會低於 PvP 強制關閉門檻，PvP 將被關閉並進入 24 小時冷卻。\n"
+            "確定仍要繼續花費嗎？"
+        ),
+        color=0xE67E22,
+    )
 
 
 def _error_embed(message: str) -> discord.Embed:
@@ -144,6 +158,13 @@ class UpgradeView(discord.ui.View):
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=f"pvp-upgrade-{stat}")
             button.callback = self._callback_for(stat, upgrade)
             self.add_item(button)
+        batch = discord.ui.Button(
+            label="批量升級",
+            style=discord.ButtonStyle.success,
+            custom_id="pvp-upgrade-batch",
+        )
+        batch.callback = self._batch_callback
+        self.add_item(batch)
 
     def _callback_for(self, stat: str, upgrade: dict[str, Any]):
         async def callback(interaction: discord.Interaction) -> None:
@@ -156,29 +177,234 @@ class UpgradeView(discord.ui.View):
                 # The V2 card can remain visible after its interaction token expires.
                 return
             now = int(time.time() * 1000)
-            try:
-                result = await asyncio.to_thread(
-                    self.pvp.upgrade_stat,
+            preview = await asyncio.to_thread(
+                self.pvp.spending_preview,
+                self.user_id,
+                int(upgrade["coin_cost"]),
+                now,
+            )
+            if preview["will_force_close"]:
+                confirmation = PvpSpendConfirmView(
+                    self.pvp,
                     self.user_id,
-                    stat,
-                    float(upgrade["amounts"][stat]),
-                    int(upgrade["coin_cost"]),
-                    float(upgrade["caps"]["crit_rate"]),
-                    float(upgrade["caps"]["crit_damage"]),
-                    now,
+                    lambda confirmed: self._execute_upgrade(confirmed, stat, upgrade),
                 )
-                profile = await asyncio.to_thread(self.pvp.profile, self.user_id, now)
-                embed = _profile_embed(profile, "⚔️ PvP 升級介面")
-                embed.description = (embed.description or "") + f"\n\n每次升級消耗 **{_number(upgrade['coin_cost'])}** 芙帽幣。"
-                if result.get("error") == "insufficient_funds":
-                    embed.description += "\n\n⚠️ 芙帽幣不足，無法升級。"
-                elif result.get("error") == "at_cap":
-                    embed.description += "\n\n⚠️ 這個屬性已達直接升級上限。"
-                await interaction.edit_original_response(view=v2_view_from_embed(embed, legacy_view=self))
-            except (discord.NotFound, discord.HTTPException):
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        _pvp_spend_warning(preview),
+                        legacy_view=confirmation,
+                    )
+                )
                 return
+            await self._execute_upgrade(interaction, stat, upgrade)
 
         return callback
+
+    async def _execute_upgrade(
+        self,
+        interaction: discord.Interaction,
+        stat: str,
+        upgrade: dict[str, Any],
+    ) -> None:
+        now = int(time.time() * 1000)
+        try:
+            result = await asyncio.to_thread(
+                self.pvp.upgrade_stat,
+                self.user_id,
+                stat,
+                float(upgrade["amounts"][stat]),
+                int(upgrade["coin_cost"]),
+                float(upgrade["caps"]["crit_rate"]),
+                float(upgrade["caps"]["crit_damage"]),
+                now,
+            )
+            profile = await asyncio.to_thread(self.pvp.profile, self.user_id, now)
+            embed = _profile_embed(profile, "⚔️ PvP 升級介面")
+            embed.description = (embed.description or "") + f"\n\n每次升級消耗 **{_number(upgrade['coin_cost'])}** 芙帽幣。"
+            if result.get("error") == "insufficient_funds":
+                embed.description += "\n\n⚠️ 芙帽幣不足，無法升級。"
+            elif result.get("error") == "at_cap":
+                embed.description += "\n\n⚠️ 這個屬性已達直接升級上限。"
+            await interaction.edit_original_response(view=v2_view_from_embed(embed, legacy_view=self))
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+    async def _batch_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的 PvP 升級介面。", ephemeral=True)
+            return
+        try:
+            await interaction.response.send_modal(DirectUpgradeBatchModal(self))
+        except discord.NotFound:
+            return
+
+    async def _execute_batch_upgrade(
+        self,
+        interaction: discord.Interaction,
+        stat: str,
+        count: int,
+        upgrade: dict[str, Any],
+    ) -> None:
+        try:
+            result = await asyncio.to_thread(
+                self.pvp.upgrade_stat_batch,
+                self.user_id,
+                stat,
+                count,
+                float(upgrade["amounts"][stat]),
+                int(upgrade["coin_cost"]),
+                float(upgrade["caps"]["crit_rate"]),
+                float(upgrade["caps"]["crit_damage"]),
+                int(time.time() * 1000),
+            )
+            profile = await asyncio.to_thread(self.pvp.profile, self.user_id)
+            embed = _profile_embed(profile, "⚔️ PvP 批量升級介面")
+            embed.description = (embed.description or "") + (
+                f"\n\n升級 **{count}** 次，消耗 **{_number(upgrade['coin_cost'] * count)}** 芙帽幣。"
+            )
+            if result.get("error") == "insufficient_funds":
+                embed.description += "\n\n⚠️ 芙帽幣不足，無法批量升級。"
+            elif result.get("error") == "at_cap":
+                embed.description += (
+                    f"\n\n⚠️ 這個屬性最多只能再升級 **{result.get('max_count', 0)}** 次。"
+                )
+            else:
+                embed.description += f"\n\n✅ {stat} 已批量升級 **{count}** 次。"
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(embed, legacy_view=self)
+            )
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+
+class DirectUpgradeBatchModal(discord.ui.Modal, title="PvP 批量升級"):
+    stat_input = discord.ui.TextInput(
+        label="升級屬性",
+        placeholder="atk、def、atk_percent、暴擊率……",
+        max_length=30,
+    )
+    count_input = discord.ui.TextInput(
+        label="升級次數",
+        placeholder="例如：5",
+        max_length=4,
+    )
+
+    def __init__(self, upgrade_view: UpgradeView) -> None:
+        super().__init__()
+        self.upgrade_view = upgrade_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        aliases = {
+            "atk": "atk", "攻擊": "atk", "攻擊力": "atk",
+            "def": "def", "防禦": "def", "防禦力": "def",
+            "atk_percent": "atk_percent", "atk%": "atk_percent", "攻擊力%": "atk_percent",
+            "def_percent": "def_percent", "def%": "def_percent", "防禦力%": "def_percent",
+            "hp": "hp", "生命": "hp", "生命值": "hp",
+            "hp_percent": "hp_percent", "hp%": "hp_percent", "生命值%": "hp_percent",
+            "crit_rate": "crit_rate", "暴擊率": "crit_rate", "爆擊率": "crit_rate",
+            "crit_damage": "crit_damage", "暴擊傷害": "crit_damage", "爆傷": "crit_damage",
+        }
+        stat = aliases.get(str(self.stat_input.value).strip().casefold())
+        try:
+            count = int(str(self.count_input.value).strip())
+        except ValueError:
+            count = 0
+        if stat is None:
+            await interaction.response.send_message(
+                "未知的屬性，請使用 atk、def、atk_percent、def_percent、hp、hp_percent、crit_rate 或 crit_damage。",
+                ephemeral=True,
+            )
+            return
+        if count < 1 or count > 1000:
+            await interaction.response.send_message("升級次數必須介於 1 到 1000。", ephemeral=True)
+            return
+
+        upgrade = direct_upgrade_config()
+        cost = int(upgrade["coin_cost"]) * count
+        try:
+            await interaction.response.defer()
+            preview = await asyncio.to_thread(
+                self.upgrade_view.pvp.spending_preview,
+                self.upgrade_view.user_id,
+                cost,
+                int(time.time() * 1000),
+            )
+            if preview["will_force_close"]:
+                confirmation = PvpSpendConfirmView(
+                    self.upgrade_view.pvp,
+                    self.upgrade_view.user_id,
+                    lambda confirmed: self.upgrade_view._execute_batch_upgrade(
+                        confirmed, stat, count, upgrade
+                    ),
+                )
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        _pvp_spend_warning(preview),
+                        legacy_view=confirmation,
+                    )
+                )
+                return
+            await self.upgrade_view._execute_batch_upgrade(interaction, stat, count, upgrade)
+        except discord.NotFound:
+            return
+
+
+class PvpSpendConfirmView(discord.ui.View):
+    """Confirmation card shown before a spend force-closes PvP."""
+
+    def __init__(
+        self,
+        pvp: PvpStore,
+        user_id: str,
+        on_confirm: Callable[[discord.Interaction], Awaitable[None]],
+        *,
+        timeout: float = 300,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.pvp = pvp
+        self.user_id = str(user_id)
+        self.on_confirm = on_confirm
+
+        confirm = discord.ui.Button(label="確認花費", style=discord.ButtonStyle.danger)
+        confirm.callback = self._confirm
+        self.add_item(confirm)
+        cancel = discord.ui.Button(label="取消", style=discord.ButtonStyle.secondary)
+        cancel.callback = self._cancel
+        self.add_item(cancel)
+
+    async def _check_user(self, interaction: discord.Interaction) -> bool:
+        if str(interaction.user.id) == self.user_id:
+            return True
+        await interaction.response.send_message("這不是你的 PvP 花費確認介面。", ephemeral=True)
+        return False
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        if not await self._check_user(interaction):
+            return
+        try:
+            await interaction.response.defer()
+            await self.on_confirm(interaction)
+        except (discord.NotFound, discord.HTTPException):
+            return
+        finally:
+            self.stop()
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        if not await self._check_user(interaction):
+            return
+        try:
+            await interaction.response.edit_message(
+                view=v2_view_from_embed(
+                    discord.Embed(
+                        title="已取消花費",
+                        description="這次沒有扣除芙帽幣，PvP 狀態也沒有變更。",
+                        color=0x95A5A6,
+                    )
+                )
+            )
+        except (discord.NotFound, discord.HTTPException):
+            return
+        self.stop()
 
 
 class PvpStatusView(discord.ui.View):
@@ -227,19 +453,23 @@ class PvpStatusView(discord.ui.View):
             embed = _profile_embed(profile, attack_logs=attack_logs)
             if profile.get("status_message"):
                 embed.description = (embed.description or "") + f"\n\n⚠️ {profile['status_message']}"
+            updated_view = None
             try:
                 updated_view = v2_view_from_embed(
                     embed,
                     legacy_view=PvpStatusView(self.pvp, self.user_id),
                 )
-                # A button interaction should edit the message containing the
-                # button. This is also reliable for ephemeral V2 messages.
-                if interaction.message is not None:
-                    await interaction.message.edit(view=updated_view)
-                else:
-                    await interaction.edit_original_response(view=updated_view)
+                # Edit the interaction's original response so the V2 layout
+                # and its component tree are replaced together.
+                await interaction.edit_original_response(view=updated_view)
             except (discord.NotFound, discord.HTTPException):
-                pass
+                # Some older Discord responses expose the source message but
+                # not an editable original response; keep a fallback for it.
+                if updated_view is not None and interaction.message is not None:
+                    try:
+                        await interaction.message.edit(view=updated_view)
+                    except (discord.NotFound, discord.HTTPException):
+                        pass
 
         return callback
 
@@ -541,6 +771,38 @@ class ArtifactBatchUpgradeModal(discord.ui.Modal, title="批量升級聖遺物")
             return
         try:
             upgrades = self.detail_view.build_upgrade_plan(artifact, count)
+            preview = await asyncio.to_thread(
+                self.detail_view.pvp.spending_preview,
+                self.detail_view.user_id,
+                sum(int(item[0]) for item in upgrades),
+                int(time.time() * 1000),
+            )
+        except (IndexError, ValueError) as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
+
+        if preview["will_force_close"]:
+            confirmation = PvpSpendConfirmView(
+                self.detail_view.pvp,
+                self.detail_view.user_id,
+                lambda confirmed: self._execute_batch(confirmed, artifact, upgrades),
+            )
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _pvp_spend_warning(preview),
+                    legacy_view=confirmation,
+                )
+            )
+            return
+        await self._execute_batch(interaction, artifact, upgrades)
+
+    async def _execute_batch(
+        self,
+        interaction: discord.Interaction,
+        artifact: dict[str, Any],
+        upgrades: list[tuple[int, str | None, float, float]],
+    ) -> None:
+        try:
             result = await asyncio.to_thread(
                 self.detail_view.pvp.upgrade_artifact_batch,
                 self.detail_view.user_id,
@@ -671,6 +933,31 @@ class ArtifactDetailView(discord.ui.View):
             await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
             return
         await interaction.response.defer()
+        color = str(self.artifact["color"])
+        level = int(self.artifact["level"])
+        costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
+        preview = await asyncio.to_thread(
+            self.pvp.spending_preview,
+            self.user_id,
+            int(costs[level]),
+            int(time.time() * 1000),
+        )
+        if preview["will_force_close"]:
+            confirmation = PvpSpendConfirmView(
+                self.pvp,
+                self.user_id,
+                lambda confirmed: self._execute_upgrade(confirmed),
+            )
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _pvp_spend_warning(preview),
+                    legacy_view=confirmation,
+                )
+            )
+            return
+        await self._execute_upgrade(interaction)
+
+    async def _execute_upgrade(self, interaction: discord.Interaction) -> None:
         color = str(self.artifact["color"])
         level = int(self.artifact["level"])
         costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
@@ -812,42 +1099,66 @@ class DomainView(discord.ui.View):
                 await interaction.response.send_message("這不是你的秘境介面。", ephemeral=True)
                 return
             await interaction.response.defer()
-            try:
-                entry = await asyncio.to_thread(
-                    self.pvp.charge_domain_entry,
+            profile = await asyncio.to_thread(self.pvp.profile, self.user_id)
+            entry_cost = int(round(1000 * int(difficulty) + int(profile["fumao_coins"]) * 0.01))
+            preview = await asyncio.to_thread(
+                self.pvp.spending_preview,
+                self.user_id,
+                entry_cost,
+                int(time.time() * 1000),
+            )
+            if preview["will_force_close"]:
+                confirmation = PvpSpendConfirmView(
+                    self.pvp,
                     self.user_id,
-                    difficulty,
-                    int(time.time() * 1000),
+                    lambda confirmed: self._execute_run(confirmed, difficulty),
                 )
-            except (ValueError, discord.NotFound, discord.HTTPException) as error:
-                if isinstance(error, ValueError):
-                    await interaction.followup.send(str(error), ephemeral=True)
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        _pvp_spend_warning(preview),
+                        legacy_view=confirmation,
+                    )
+                )
                 return
-            created: list[dict[str, Any]] = []
-            set_ids = self.domain.get("set_ids", [""]) or [""]
-            for color in ("green", "blue", "purple", "yellow"):
-                count = drop_count(self.domain, color, difficulty)
-                for _ in range(count):
-                    artifact = generate_artifact(color, random.choice(set_ids))
-                    await asyncio.to_thread(self.pvp.add_artifact, self.user_id, artifact, int(time.time() * 1000))
-                    created.append(artifact)
-            if created:
-                lines = [f"{artifact_color(item['color'])['label']} {item['slot']}（{item['main_stat']}）" for item in created]
-                description = (
-                    f"消耗：**{_number(entry['cost'])}** 芙帽幣\n"
-                    f"剩餘：**{_number(entry['balance'])}** 芙帽幣\n\n"
-                    "成功取得：\n" + "\n".join(lines)
-                )
-            else:
-                description = (
-                    f"消耗：**{_number(entry['cost'])}** 芙帽幣\n"
-                    f"剩餘：**{_number(entry['balance'])}** 芙帽幣\n\n"
-                    "這次沒有取得聖遺物。"
-                )
-            embed = discord.Embed(title=f"🏛️ {self.domain.get('name', '秘境')} Lv.{difficulty}", description=description, color=COLOR)
-            await interaction.edit_original_response(view=v2_view_from_embed(embed))
+            await self._execute_run(interaction, difficulty)
 
         return callback
+
+    async def _execute_run(self, interaction: discord.Interaction, difficulty: int) -> None:
+        try:
+            entry = await asyncio.to_thread(
+                self.pvp.charge_domain_entry,
+                self.user_id,
+                difficulty,
+                int(time.time() * 1000),
+            )
+        except (ValueError, discord.NotFound, discord.HTTPException) as error:
+            if isinstance(error, ValueError):
+                await interaction.followup.send(str(error), ephemeral=True)
+            return
+        created: list[dict[str, Any]] = []
+        set_ids = self.domain.get("set_ids", [""]) or [""]
+        for color in ("green", "blue", "purple", "yellow"):
+            count = drop_count(self.domain, color, difficulty)
+            for _ in range(count):
+                artifact = generate_artifact(color, random.choice(set_ids))
+                await asyncio.to_thread(self.pvp.add_artifact, self.user_id, artifact, int(time.time() * 1000))
+                created.append(artifact)
+        if created:
+            lines = [f"{artifact_color(item['color'])['label']} {item['slot']}（{item['main_stat']}）" for item in created]
+            description = (
+                f"消耗：**{_number(entry['cost'])}** 芙帽幣\n"
+                f"剩餘：**{_number(entry['balance'])}** 芙帽幣\n\n"
+                "成功取得：\n" + "\n".join(lines)
+            )
+        else:
+            description = (
+                f"消耗：**{_number(entry['cost'])}** 芙帽幣\n"
+                f"剩餘：**{_number(entry['balance'])}** 芙帽幣\n\n"
+                "這次沒有取得聖遺物。"
+            )
+        embed = discord.Embed(title=f"🏛️ {self.domain.get('name', '秘境')} Lv.{difficulty}", description=description, color=COLOR)
+        await interaction.edit_original_response(view=v2_view_from_embed(embed))
 
 
 class DomainSelectView(discord.ui.View):
@@ -895,26 +1206,10 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
 
     @pvp.command(name="狀態", description="開啟或關閉 PvP")
     @app_commands.guild_only()
-    @app_commands.describe(enabled="可選：直接指定開啟或關閉；省略則顯示狀態卡片")
-    async def pvp_status(interaction: Any, enabled: bool | None = None) -> None:
-        status_message = None
-        if enabled is not None:
-            result = await asyncio.to_thread(
-                store.toggle,
-                str(interaction.user.id), bool(enabled), int(time.time() * 1000),
-                int(pvp_rules()["minimum_open_coins"]),
-                int(PVP_CONFIG["cooldowns"]["toggle_hours"] * 60 * 60 * 1000),
-            )
-            error = result.get("error")
-            if error:
-                status_message = _toggle_error_text(result)
+    async def pvp_status(interaction: Any) -> None:
         profile = await asyncio.to_thread(store.profile, str(interaction.user.id))
         attack_logs = await asyncio.to_thread(store.recent_attack_logs, str(interaction.user.id))
-        if status_message:
-            profile["status_message"] = status_message
         embed = _profile_embed(profile, attack_logs=attack_logs)
-        if status_message:
-            embed.description = (embed.description or "") + f"\n\n⚠️ {status_message}"
         await interaction.response.send_message(
             view=v2_view_from_embed(
                 embed,

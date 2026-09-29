@@ -369,6 +369,50 @@ class BetSetupView(discord.ui.View):
         )
 
 
+class BetSpendConfirmView(discord.ui.View):
+    def __init__(self, user_id: str, on_confirm: Any) -> None:
+        super().__init__(timeout=300)
+        self.user_id = str(user_id)
+        self.on_confirm = on_confirm
+
+        confirm = discord.ui.Button(label="確認下注", style=discord.ButtonStyle.danger)
+        confirm.callback = self._confirm
+        self.add_item(confirm)
+        cancel = discord.ui.Button(label="取消", style=discord.ButtonStyle.secondary)
+        cancel.callback = self._cancel
+        self.add_item(cancel)
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的下注確認介面。", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer()
+            await self.on_confirm(interaction)
+        except (discord.NotFound, discord.HTTPException):
+            return
+        finally:
+            self.stop()
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的下注確認介面。", ephemeral=True)
+            return
+        try:
+            await interaction.response.edit_message(
+                view=v2_view_from_embed(
+                    discord.Embed(
+                        title="已取消下注",
+                        description="這次沒有扣除芙帽幣。",
+                        color=0x95A5A6,
+                    )
+                )
+            )
+        except (discord.NotFound, discord.HTTPException):
+            return
+        self.stop()
+
+
 class BetAmountModal(discord.ui.Modal, title="下注確認"):
     amount = discord.ui.TextInput(
         label="下注數量（芙帽幣）",
@@ -401,6 +445,40 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
 
         import asyncio
 
+        preview = await asyncio.to_thread(
+            self.store.pvp_spending_preview,
+            str(interaction.user.id),
+            amount,
+        )
+        if preview.get("will_force_close"):
+            warning = discord.Embed(
+                title="⚠️ 確認下注",
+                description=(
+                    f"這次將下注 **{amount:,}** 芙帽幣。\n"
+                    f"下注後餘額：**{preview['after']:,}** 芙帽幣\n"
+                    f"PvP 強制關閉門檻：**{preview['threshold']:,.0f}** 芙帽幣\n\n"
+                    "下注後會低於 PvP 強制關閉門檻，PvP 將被關閉並進入 24 小時冷卻。\n"
+                    "確定仍要下注嗎？"
+                ),
+                color=0xE67E22,
+            )
+            await interaction.response.send_message(
+                view=v2_view_from_embed(
+                    warning,
+                    legacy_view=BetSpendConfirmView(
+                        str(interaction.user.id),
+                        lambda confirmed: self._place_bet(confirmed, amount),
+                    ),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await self._place_bet(interaction, amount)
+
+    async def _place_bet(self, interaction: discord.Interaction, amount: int) -> None:
+        import asyncio
+
         try:
             result = await asyncio.to_thread(
                 self.store.place_bet,
@@ -412,7 +490,10 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
                 int(time.time() * 1000),
             )
         except ValueError as error:
-            await interaction.response.send_message(str(error), ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(str(error), ephemeral=True)
+            else:
+                await interaction.response.send_message(str(error), ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -425,10 +506,13 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
             ),
             color=0x2ECC71,
         )
-        await interaction.response.send_message(
-            view=v2_view_from_embed(embed),
-            ephemeral=True,
-        )
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=v2_view_from_embed(embed))
+        else:
+            await interaction.response.send_message(
+                view=v2_view_from_embed(embed),
+                ephemeral=True,
+            )
 
 
 class BetOpenView(discord.ui.View):

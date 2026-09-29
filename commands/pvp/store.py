@@ -174,6 +174,28 @@ class PvpStore:
             profile.update({"fumao_coins": int(account["fumao_coins"]), "level": int(account["level"])})
             return profile
 
+    def spending_preview(self, user_id: str, amount: int, now_ms: int | None = None) -> dict[str, Any]:
+        """Check whether a planned coin spend would force-close PvP."""
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        with self.base.lock, self._connect() as connection:
+            profile = self._refresh(connection, str(user_id), now)
+            account = self._account(connection, str(user_id))
+            current = int(account["fumao_coins"])
+            spend = max(0, int(amount))
+            threshold = float(
+                profile["baseline_coins"]
+                * float(pvp_rules().get("forced_close_threshold", 0.15))
+            )
+            after = current - spend
+            return {
+                "enabled": bool(profile["enabled"]),
+                "current": current,
+                "spend": spend,
+                "after": after,
+                "threshold": threshold,
+                "will_force_close": bool(profile["enabled"] and after < threshold),
+            }
+
     def recent_attack_logs(self, user_id: str, limit: int = 5) -> dict[str, list[dict[str, Any]]]:
         """Return recent thefts made by and against a user."""
         safe_limit = max(1, min(int(limit), 20))
@@ -316,6 +338,80 @@ class PvpStore:
             )
             result = self._select_profile(connection, str(user_id))
             result.update(changed=new - old, fumao_coins=int(account["fumao_coins"]) - int(cost))
+            return result
+
+    def upgrade_stat_batch(
+        self,
+        user_id: str,
+        stat: str,
+        count: int,
+        amount: float,
+        cost: int,
+        crit_rate_cap: float,
+        crit_damage_cap: float,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Upgrade one direct PvP stat several times atomically."""
+        columns = {
+            "atk": "direct_atk", "def": "direct_def",
+            "atk_percent": "direct_atk_percent", "def_percent": "direct_def_percent",
+            "hp": "direct_hp", "hp_percent": "direct_hp_percent",
+            "crit_rate": "direct_crit_rate", "crit_damage": "direct_crit_damage",
+        }
+        column = columns.get(stat)
+        if column is None:
+            raise ValueError("未知的 PvP 升級屬性")
+        count = int(count)
+        if count < 1:
+            raise ValueError("升級次數必須至少為 1")
+        total_cost = int(cost) * count
+        with self.base.lock, self._connect() as connection:
+            profile = self._refresh(connection, str(user_id), int(now_ms))
+            account = self._account(connection, str(user_id))
+            if int(account["fumao_coins"]) < total_cost:
+                profile.update(error="insufficient_funds", fumao_coins=int(account["fumao_coins"]))
+                return profile
+
+            old = float(profile[column])
+            new = old + float(amount) * count
+            cap = None
+            if stat == "crit_rate":
+                cap = float(crit_rate_cap)
+            elif stat == "crit_damage":
+                cap = float(crit_damage_cap)
+            if cap is not None and new > cap + 1e-9:
+                max_count = max(0, int((cap - old) / float(amount) + 1e-9))
+                profile.update(
+                    error="at_cap",
+                    max_count=max_count,
+                    fumao_coins=int(account["fumao_coins"]),
+                )
+                return profile
+
+            connection.execute(
+                f"UPDATE pvp_profiles SET {column} = ?, updated_at = ? WHERE user_id = ?",
+                (new, int(now_ms), str(user_id)),
+            )
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
+                (total_cost, str(user_id)),
+            )
+            self._refresh(connection, str(user_id), int(now_ms))
+            self.base._record_economy_currency_change(
+                connection,
+                str(user_id),
+                "fumao_coins",
+                -total_cost,
+                f"PvP 批量升級 {stat} x{count}",
+                int(now_ms),
+            )
+            result = self._select_profile(connection, str(user_id))
+            result.update(
+                changed=new - old,
+                upgrade_count=count,
+                total_cost=total_cost,
+                fumao_coins=int(account["fumao_coins"]) - total_cost,
+            )
             return result
 
     @staticmethod

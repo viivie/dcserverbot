@@ -585,6 +585,7 @@ class UpgradeView(discord.ui.View):
         self.user_id = user_id
         self.guild = guild
         self.checkin_embed = checkin_embed
+        self.pvp_spend_warning_shown = False
         self._set_upgrade_button()
 
     def _set_upgrade_button(self) -> None:
@@ -593,9 +594,9 @@ class UpgradeView(discord.ui.View):
         button.callback = self._show_confirmation
         self.add_item(button)
 
-    def _set_confirmation_buttons(self) -> None:
+    def _set_confirmation_buttons(self, confirm_label: str = "確認升級") -> None:
         self.clear_items()
-        confirm_button = discord.ui.Button(label="確認升級", style=discord.ButtonStyle.success)
+        confirm_button = discord.ui.Button(label=confirm_label, style=discord.ButtonStyle.success)
         cancel_button = discord.ui.Button(label="取消", style=discord.ButtonStyle.secondary)
         confirm_button.callback = self._confirm_upgrade
         cancel_button.callback = self._cancel_upgrade
@@ -669,6 +670,29 @@ class UpgradeView(discord.ui.View):
                 pass
             self.stop()
             return
+
+        if not self.pvp_spend_warning_shown:
+            preview = await asyncio.to_thread(
+                self.context.store.pvp_spending_preview,
+                str(self.user_id),
+                int(target.coin_cost),
+            )
+            if preview.get("will_force_close"):
+                self.pvp_spend_warning_shown = True
+                self._set_confirmation_buttons("確認花費")
+                warning = _upgrade_embed(discord, account, interaction.guild, confirm=True)
+                warning.description = (warning.description or "") + (
+                    "\n\n⚠️ 這次升級花費後會低於 PvP 強制關閉門檻，"
+                    "PvP 將被關閉並進入 24 小時冷卻。\n"
+                    "請再次按下「確認花費」以繼續。"
+                )
+                try:
+                    await interaction.edit_original_response(
+                        view=v2_view_from_embed(warning, legacy_view=self)
+                    )
+                except discord.NotFound:
+                    pass
+                return
 
         result = await asyncio.to_thread(
             self.context.store.upgrade_economy,
