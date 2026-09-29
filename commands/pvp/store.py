@@ -148,15 +148,13 @@ class PvpStore:
                     (int(now_ms) + 24 * 60 * 60 * 1000, int(now_ms), str(user_id)),
                 )
             elif coins > profile["baseline_coins"] * 2:
-                # Treat the current balance as the new PvP reference point as
-                # soon as the loss cap is expanded.  The accumulated loss is
-                # intentionally preserved, while the cap is recalculated from
-                # the new baseline.
-                new_baseline = coins
+                # The baseline is fixed at the moment PvP is opened.  Only
+                # the loss cap grows during an active session; it is reset
+                # together with the baseline on the next opening.
                 new_cap = max(1, int(coins * 0.10))
                 connection.execute(
-                    "UPDATE pvp_profiles SET baseline_coins = ?, loss_cap = ?, updated_at = ? WHERE user_id = ?",
-                    (new_baseline, new_cap, int(now_ms), str(user_id)),
+                    "UPDATE pvp_profiles SET loss_cap = ?, updated_at = ? WHERE user_id = ?",
+                    (new_cap, int(now_ms), str(user_id)),
                 )
         return self._select_profile(connection, user_id)
 
