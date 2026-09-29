@@ -50,38 +50,70 @@ def equipped_stats(profile: dict[str, Any], artifacts: list[dict[str, Any]]) -> 
     return stats
 
 
-def calculate_damage(profile: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
-    stats = equipped_stats(profile, artifacts)
+def calculate_damage(
+    profile: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    defender_profile: dict[str, Any] | None = None,
+    defender_artifacts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Calculate total damage using separate attacker and defender stats."""
+    defender_profile = defender_profile or profile
+    defender_artifacts = artifacts if defender_artifacts is None else defender_artifacts
+    attacker_stats = equipped_stats(profile, artifacts)
+    defender_stats = equipped_stats(defender_profile, defender_artifacts)
     base = PVP_CONFIG["base_stats"]
-    atk = (float(base["atk"]) + stats["atk"]) * (1.0 + stats["atk_percent"])
-    defense = (float(base["def"]) + stats["def"]) * (1.0 + stats["def_percent"])
-    hp = (float(base["hp"]) + stats["hp"]) * (1.0 + stats["hp_percent"])
-    k_atk = random.uniform(float(PVP_CONFIG["damage"]["k_min"]), float(PVP_CONFIG["damage"]["k_max"]))
-    k_def = random.uniform(float(PVP_CONFIG["damage"]["k_min"]), float(PVP_CONFIG["damage"]["k_max"]))
-    crit_rate = min(1.0, max(0.0, stats["crit_rate"]))
-    critical = random.random() < crit_rate
-    multiplier = 1.0 + stats["crit_damage"] if critical else 1.0
-    atk_level = level_multiplier(int(profile.get("level", 1)))
-    def_level = level_multiplier(int(profile.get("level", 1)))
-    # ATK% and DEF% are represented as decimals; both use the requested 1+X form.
-    raw = atk * k_atk * multiplier * atk_level * 100.0 / (
-        100.0 + defense * k_def * def_level
+    atk = (float(base["atk"]) + attacker_stats["atk"]) * (1.0 + attacker_stats["atk_percent"])
+    defense = (float(base["def"]) + defender_stats["def"]) * (1.0 + defender_stats["def_percent"])
+    hp = (float(base["hp"]) + attacker_stats["hp"]) * (1.0 + attacker_stats["hp_percent"])
+    attack_count = max(
+        1,
+        min(
+            int(PVP_CONFIG["damage"].get("max_attacks", 3)),
+            int(profile.get("attack_count", PVP_CONFIG["damage"].get("initial_attacks", 1))),
+        ),
     )
-    final_increase = float(stats.get("final_damage_increase", 0.0))
-    final_reduction = min(1.0, max(0.0, float(stats.get("final_damage_reduction", 0.0))))
-    damage = max(0.0, raw * (1.0 + final_increase) * (1.0 - final_reduction))
+    k_atk_values: list[float] = []
+    k_def_values: list[float] = []
+    hit_results: list[dict[str, Any]] = []
+    attacker_level = level_multiplier(int(profile.get("level", 1)))
+    defender_level = level_multiplier(int(defender_profile.get("level", 1)))
+    crit_rate = min(1.0, max(0.0, attacker_stats["crit_rate"]))
+    final_increase = float(attacker_stats.get("final_damage_increase", 0.0))
+    final_reduction = min(1.0, max(0.0, float(defender_stats.get("final_damage_reduction", 0.0))))
+
+    for _ in range(attack_count):
+        k_atk = random.uniform(float(PVP_CONFIG["damage"]["k_min"]), float(PVP_CONFIG["damage"]["k_max"]))
+        k_def = random.uniform(float(PVP_CONFIG["damage"]["k_min"]), float(PVP_CONFIG["damage"]["k_max"]))
+        critical = random.random() < crit_rate
+        multiplier = 1.0 + attacker_stats["crit_damage"] if critical else 1.0
+        # ATK% and DEF% are represented as decimals; both use the requested 1+X form.
+        raw = atk * k_atk * multiplier * attacker_level * 100.0 / (
+            100.0 + defense * k_def * defender_level
+        )
+        hit_damage = max(0.0, raw * (1.0 + final_increase) * (1.0 - final_reduction))
+        k_atk_values.append(k_atk)
+        k_def_values.append(k_def)
+        hit_results.append({"damage": hit_damage, "critical": critical, "k_atk": k_atk, "k_def": k_def})
+
+    damage = sum(float(hit["damage"]) for hit in hit_results)
+    critical = any(bool(hit["critical"]) for hit in hit_results)
     return {
         "damage": damage,
         "r": damage / 100.0,
         "critical": critical,
         "crit_rate": crit_rate,
-        "crit_damage": stats["crit_damage"],
-        "k_atk": k_atk,
-        "k_def": k_def,
+        "crit_damage": attacker_stats["crit_damage"],
+        "k_atk": k_atk_values[0],
+        "k_def": k_def_values[0],
+        "k_atk_values": k_atk_values,
+        "k_def_values": k_def_values,
+        "hits": hit_results,
+        "attack_count": attack_count,
         "attack": atk,
         "defense": defense,
         "hp": hp,
-        "stats": stats,
+        "attacker_stats": attacker_stats,
+        "defender_stats": defender_stats,
     }
 
 

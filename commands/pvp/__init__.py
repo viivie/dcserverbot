@@ -1272,14 +1272,28 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
             return
         try:
             attacker_profile = await asyncio.to_thread(store.profile, attacker_id)
-            artifacts = await asyncio.to_thread(store.artifacts, attacker_id)
-            damage = calculate_damage(attacker_profile, artifacts)
             defender_profile = await asyncio.to_thread(store.profile, defender_id)
+            attacker_artifacts = await asyncio.to_thread(store.artifacts, attacker_id)
+            defender_artifacts = await asyncio.to_thread(store.artifacts, defender_id)
+            damage = calculate_damage(
+                attacker_profile,
+                attacker_artifacts,
+                defender_profile,
+                defender_artifacts,
+            )
             prize_pool = max(int(defender_profile["fumao_coins"]), int(defender_profile["baseline_coins"])) * float(pvp_rules()["prize_pool_rate"])
             theft = max(1, int(prize_pool * float(damage["r"])))
             result = await asyncio.to_thread(
                 store.resolve_attack, attacker_id, defender_id, theft, int(time.time() * 1000),
-                {"damage": damage["damage"], "r": damage["r"], "critical": damage["critical"], "k_atk": damage["k_atk"], "k_def": damage["k_def"]},
+                {
+                    "damage": damage["damage"],
+                    "r": damage["r"],
+                    "critical": damage["critical"],
+                    "attack_count": damage["attack_count"],
+                    "k_atk_values": damage["k_atk_values"],
+                    "k_def_values": damage["k_def_values"],
+                    "hits": damage["hits"],
+                },
             )
         except ValueError as error:
             try:
@@ -1292,7 +1306,7 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
             title="⚔️ PvP 攻擊結果",
             description=(
                 f"{interaction.user.mention} 攻擊了 {target.mention}\n"
-                f"造成傷害：**{damage['damage']:.2f}**（r = **{damage['r']:.4f}**）\n"
+                f"造成傷害：**{damage['damage']:.2f}**（{damage['attack_count']} 次，r = **{damage['r']:.4f}**）\n"
                 + critical_line
                 + f"獲得芙帽幣：**{_number(result['amount'])}**\n"
                 + f"對方損失：**{_number(result['defender_loss'])}**\n"
