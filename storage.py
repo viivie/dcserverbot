@@ -7,12 +7,30 @@ import random
 import sqlite3
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from commands.worship import next_streak, taipei_today
 
 ECONOMY_LOG_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
+PVP_CONFIG_PATH = Path(__file__).resolve().parent / "commands" / "pvp" / "json" / "pvp_config.json"
+
+
+@lru_cache(maxsize=1)
+def _pvp_economy_config() -> dict[str, Any]:
+    try:
+        value = json.loads(PVP_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "cooldowns": {"forced_hours": 24},
+            "rules": {
+                "loss_cap_rate": 0.1,
+                "growth_threshold": 2.0,
+                "forced_close_threshold": 0.15,
+            },
+        }
+    return value if isinstance(value, dict) else {}
 
 
 class WorshipStore:
@@ -333,6 +351,7 @@ class WorshipStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ?, crystals = crystals + ? WHERE user_id = ?",
                 (tribute_amount, crystals_reward, user_id),
             )
+            self._refresh_pvp_state(connection, user_id, int(time.time() * 1000))
             self._record_economy_currency_change(
                 connection,
                 user_id,
@@ -469,21 +488,59 @@ class WorshipStore:
             ]
 
     @staticmethod
-    def _pvp_bonus_multiplier(
+    def _refresh_pvp_state(
         connection: sqlite3.Connection,
         user_id: str,
-        level: int,
-    ) -> float:
-        """Return the PvP reward bonus for a user who currently has PvP enabled."""
+        now_ms: int,
+    ) -> bool:
+        """Refresh PvP thresholds after an economy balance change."""
         try:
-            row = connection.execute(
-                "SELECT enabled FROM pvp_profiles WHERE user_id = ?",
+            profile = connection.execute(
+                """
+                SELECT enabled, baseline_coins, loss_cap
+                FROM pvp_profiles WHERE user_id = ?
+                """, (str(user_id),),
+            ).fetchone()
+            account = connection.execute(
+                "SELECT fumao_coins FROM economy_accounts WHERE user_id = ?",
                 (str(user_id),),
             ).fetchone()
         except sqlite3.OperationalError:
             # The PvP command module creates this table during command registration.
-            return 1.0
-        if row is None or not bool(row[0]):
+            return False
+        if profile is None or not bool(profile[0]) or account is None:
+            return False
+        pvp_config = _pvp_economy_config()
+        rules = pvp_config.get("rules", {})
+        coins = int(account[0])
+        baseline = int(profile[1])
+        if baseline > 0 and coins < baseline * float(rules.get("forced_close_threshold", 0.15)):
+            forced_hours = float(pvp_config.get("cooldowns", {}).get("forced_hours", 24))
+            connection.execute(
+                "UPDATE pvp_profiles SET enabled = 0, forced_cooldown_until = ?, updated_at = ? WHERE user_id = ?",
+                (int(now_ms) + int(forced_hours * 60 * 60 * 1000), int(now_ms), str(user_id)),
+            )
+            return False
+        if baseline > 0 and coins > baseline * float(rules.get("growth_threshold", 2.0)):
+            new_cap = max(
+                int(profile[2]),
+                max(1, int(coins * float(rules.get("loss_cap_rate", 0.1)))),
+            )
+            connection.execute(
+                "UPDATE pvp_profiles SET loss_cap = ?, updated_at = ? WHERE user_id = ?",
+                (new_cap, int(now_ms), str(user_id)),
+            )
+        return True
+
+    @staticmethod
+    def _pvp_bonus_multiplier(
+        connection: sqlite3.Connection,
+        user_id: str,
+        level: int,
+        now_ms: int,
+    ) -> float:
+        """Return the PvP reward bonus after refreshing PvP thresholds."""
+        if not WorshipStore._refresh_pvp_state(connection, user_id, now_ms):
             return 1.0
         bounded_level = max(1, min(int(level), 30))
         return 1.5 + (bounded_level - 1) * (1.5 / 29)
@@ -506,7 +563,7 @@ class WorshipStore:
                 return account
 
             pvp_multiplier = self._pvp_bonus_multiplier(
-                connection, str(user_id), int(account["level"])
+                connection, str(user_id), int(account["level"]), now_ms
             )
             reward = int(round(base_reward * random_multiplier * multiplier * pvp_multiplier))
             connection.execute(
@@ -517,6 +574,7 @@ class WorshipStore:
                 """,
                 (reward, day, str(user_id)),
             )
+            self._refresh_pvp_state(connection, str(user_id), now_ms)
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
@@ -567,7 +625,7 @@ class WorshipStore:
 
             accumulated_hours = min(accumulated_hours, max(1, int(saved_hours)))
             pvp_multiplier = self._pvp_bonus_multiplier(
-                connection, str(user_id), int(account["level"])
+                connection, str(user_id), int(account["level"]), now_ms
             )
             reward = int(round(base_reward * accumulated_hours * multiplier * pvp_multiplier))
             connection.execute(
@@ -578,6 +636,7 @@ class WorshipStore:
                 """,
                 (reward, current_hour_start, str(user_id)),
             )
+            self._refresh_pvp_state(connection, str(user_id), now_ms)
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
@@ -628,6 +687,7 @@ class WorshipStore:
                 """,
                 (int(coin_cost), int(crystal_cost), int(target_level), str(user_id)),
             )
+            self._refresh_pvp_state(connection, str(user_id), now_ms)
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
@@ -677,6 +737,8 @@ class WorshipStore:
                 f"UPDATE economy_accounts SET {column} = {column} + ? WHERE user_id = ?",
                 (actual, str(user_id)),
             )
+            if currency == "fumao_coins":
+                self._refresh_pvp_state(connection, str(user_id), now_ms)
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
@@ -727,6 +789,8 @@ class WorshipStore:
                     f"UPDATE economy_accounts SET {column} = {column} + ? WHERE user_id = ?",
                     (actual, user_id),
                 )
+                if currency == "fumao_coins":
+                    self._refresh_pvp_state(connection, user_id, now_ms)
                 self._record_economy_currency_change(
                     connection, user_id, currency, actual, source, now_ms
                 )
@@ -935,6 +999,7 @@ class WorshipStore:
                 f"UPDATE economy_accounts SET {currency_column} = {currency_column} - ? WHERE user_id = ?",
                 (int(amount), str(user_id)),
             )
+            self._refresh_pvp_state(connection, str(user_id), int(now_ms))
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
@@ -1106,7 +1171,7 @@ class WorshipStore:
                     if entry_currency == "fumao_coins":
                         account = self._select_economy_account(connection, str(user_id))
                         pvp_multiplier = self._pvp_bonus_multiplier(
-                            connection, str(user_id), int(account["level"])
+                            connection, str(user_id), int(account["level"]), int(now_ms)
                         )
                         payout = int(round(payout * pvp_multiplier))
                     paid += payout
@@ -1135,6 +1200,8 @@ class WorshipStore:
                         source,
                         int(now_ms),
                     )
+                    if entry_currency == "fumao_coins":
+                        self._refresh_pvp_state(connection, str(user_id), int(now_ms))
 
             connection.execute(
                 "UPDATE bets SET resolved_outcome = ? WHERE message_id = ?",
@@ -1179,6 +1246,7 @@ class WorshipStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
                 (actual, str(user_id)),
             )
+            self._refresh_pvp_state(connection, str(user_id), now_ms)
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
@@ -1227,6 +1295,8 @@ class WorshipStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
                 (received, str(recipient_id)),
             )
+            self._refresh_pvp_state(connection, str(sender_id), now_ms)
+            self._refresh_pvp_state(connection, str(recipient_id), now_ms)
             self._record_economy_currency_change(
                 connection, str(sender_id), "fumao_coins", -total,
                 f"轉帳給 {recipient_id}（手續費 {fee}）", now_ms,

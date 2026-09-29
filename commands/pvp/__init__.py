@@ -193,7 +193,7 @@ class PvpStatusView(discord.ui.View):
                 await interaction.response.send_message("這不是你的 PvP 狀態介面。", ephemeral=True)
                 return
             try:
-                await interaction.response.defer()
+                await interaction.response.defer(thinking=False)
             except discord.NotFound:
                 return
             result = await asyncio.to_thread(
@@ -219,13 +219,17 @@ class PvpStatusView(discord.ui.View):
             if profile.get("status_message"):
                 embed.description = (embed.description or "") + f"\n\n⚠️ {profile['status_message']}"
             try:
-                await interaction.edit_original_response(
-                    view=v2_view_from_embed(
-                        embed,
-                        legacy_view=PvpStatusView(self.pvp, self.user_id),
-                    )
+                updated_view = v2_view_from_embed(
+                    embed,
+                    legacy_view=PvpStatusView(self.pvp, self.user_id),
                 )
-            except discord.NotFound:
+                # A button interaction should edit the message containing the
+                # button. This is also reliable for ephemeral V2 messages.
+                if interaction.message is not None:
+                    await interaction.message.edit(view=updated_view)
+                else:
+                    await interaction.edit_original_response(view=updated_view)
+            except (discord.NotFound, discord.HTTPException):
                 pass
 
         return callback
@@ -674,7 +678,10 @@ class ArtifactDetailView(discord.ui.View):
         roll_stat = None
         roll_amount = 0.0
         if level + 1 in (4, 8, 12, 16, 20):
-            candidates = list(self.artifact.get("sub_stats", {}))
+            candidates = [
+                stat for stat in self.artifact.get("sub_stats", {})
+                if not str(stat).startswith("__")
+            ]
             if candidates:
                 roll_stat = random.choice(candidates)
                 from .engine import _sub_value
@@ -918,20 +925,34 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
     @app_commands.guild_only()
     async def pvp_roster(interaction: Any) -> None:
         guild = interaction.guild
+        members = list(guild.members)
         member_names = {
             str(member.id): str(member.display_name)
-            for member in guild.members
+            for member in members
             if not member.bot
         }
         profiles = await asyncio.to_thread(
             store.enabled_profiles,
-            set(member_names),
+            None,
             int(time.time() * 1000),
         )
+        visible_profiles: list[dict[str, Any]] = []
+        for profile in profiles:
+            user_id = str(profile["user_id"])
+            member = guild.get_member(int(user_id))
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(user_id))
+                except (discord.NotFound, discord.HTTPException, ValueError):
+                    continue
+            if member.bot:
+                continue
+            member_names[user_id] = str(member.display_name)
+            visible_profiles.append(profile)
         await interaction.response.send_message(
             view=v2_view_from_embed(
-                _pvp_roster_embed(profiles, member_names),
-                legacy_view=PvpRosterView(profiles, member_names, str(interaction.user.id)),
+                _pvp_roster_embed(visible_profiles, member_names),
+                legacy_view=PvpRosterView(visible_profiles, member_names, str(interaction.user.id)),
             ),
             ephemeral=True,
         )
@@ -976,7 +997,8 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
                 f"{interaction.user.mention} 攻擊了 {target.mention}\n"
                 f"造成傷害：**{damage['damage']:.2f}**（r = **{damage['r']:.4f}**）\n"
                 + critical_line
-                + f"偷取芙帽幣：**{_number(result['amount'])}**\n"
+                + f"獲得芙帽幣：**{_number(result['amount'])}**\n"
+                + f"對方損失：**{_number(result['defender_loss'])}**\n"
                 f"對方剩餘：**{_number(result['defender_balance'])}**"
             ),
             color=0xC0392B,

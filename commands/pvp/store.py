@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Any
 
-from .config import ARTIFACT_CONFIG, artifact_color
+from .config import ARTIFACT_CONFIG, PVP_CONFIG, artifact_color, pvp_rules
 
 
 class PvpStore:
@@ -141,17 +141,25 @@ class PvpStore:
         profile = self._select_profile(connection, user_id)
         account = self._account(connection, user_id)
         coins = int(account["fumao_coins"])
+        rules = pvp_rules()
         if profile["enabled"] and profile["baseline_coins"] > 0:
-            if coins < profile["baseline_coins"] * 0.15:
+            if coins < profile["baseline_coins"] * float(rules.get("forced_close_threshold", 0.15)):
                 connection.execute(
                     "UPDATE pvp_profiles SET enabled = 0, forced_cooldown_until = ?, updated_at = ? WHERE user_id = ?",
-                    (int(now_ms) + 24 * 60 * 60 * 1000, int(now_ms), str(user_id)),
+                    (
+                        int(now_ms) + int(float(PVP_CONFIG["cooldowns"].get("forced_hours", 24)) * 60 * 60 * 1000),
+                        int(now_ms),
+                        str(user_id),
+                    ),
                 )
-            elif coins > profile["baseline_coins"] * 2:
+            elif coins > profile["baseline_coins"] * float(rules.get("growth_threshold", 2.0)):
                 # The baseline is fixed at the moment PvP is opened.  Only
                 # the loss cap grows during an active session; it is reset
                 # together with the baseline on the next opening.
-                new_cap = max(1, int(coins * 0.10))
+                new_cap = max(
+                    int(profile["loss_cap"]),
+                    max(1, int(coins * float(rules.get("loss_cap_rate", 0.1)))),
+                )
                 connection.execute(
                     "UPDATE pvp_profiles SET loss_cap = ?, updated_at = ? WHERE user_id = ?",
                     (new_cap, int(now_ms), str(user_id)),
@@ -196,17 +204,24 @@ class PvpStore:
                     })
             return result
 
-    def enabled_profiles(self, user_ids: list[str] | set[str], now_ms: int | None = None) -> list[dict[str, Any]]:
-        """Return enabled PvP profiles belonging to the supplied guild members."""
-        member_ids = {str(user_id) for user_id in user_ids}
-        if not member_ids:
+    def enabled_profiles(
+        self,
+        user_ids: list[str] | set[str] | None = None,
+        now_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return enabled PvP profiles, optionally filtered by member IDs."""
+        member_ids = None if user_ids is None else {str(user_id) for user_id in user_ids}
+        if member_ids is not None and not member_ids:
             return []
         now = int(time.time() * 1000) if now_ms is None else int(now_ms)
         with self.base.lock, self._connect() as connection:
             rows = connection.execute(
                 "SELECT user_id FROM pvp_profiles WHERE enabled = 1"
             ).fetchall()
-            enabled_ids = [str(row[0]) for row in rows if str(row[0]) in member_ids]
+            enabled_ids = [
+                str(row[0]) for row in rows
+                if member_ids is None or str(row[0]) in member_ids
+            ]
             profiles: list[dict[str, Any]] = []
             for user_id in enabled_ids:
                 profile = self._refresh(connection, user_id, now)
@@ -242,7 +257,13 @@ class PvpStore:
                            loss_cap = ?, lost_coins = 0, toggle_cooldown_until = ?, updated_at = ?
                     WHERE user_id = ?
                     """,
-                    (coins, max(1, int(coins * 0.10)), int(now_ms) + int(cooldown_ms), int(now_ms), str(user_id)),
+                    (
+                        coins,
+                        max(1, int(coins * float(pvp_rules().get("loss_cap_rate", 0.1)))),
+                        int(now_ms) + int(cooldown_ms),
+                        int(now_ms),
+                        str(user_id),
+                    ),
                 )
             else:
                 connection.execute(
@@ -289,6 +310,7 @@ class PvpStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
                 (int(cost), str(user_id)),
             )
+            self._refresh(connection, str(user_id), int(now_ms))
             self.base._record_economy_currency_change(
                 connection, str(user_id), "fumao_coins", -int(cost), f"PvP 升級 {stat}", int(now_ms)
             )
@@ -399,6 +421,8 @@ class PvpStore:
                 raise ValueError("芙帽幣不足")
             sub_stats = dict(artifact["sub_stats"])
             if roll_stat:
+                if str(roll_stat).startswith("__"):
+                    raise ValueError("無效的聖遺物副詞條")
                 sub_stats[roll_stat] = round(float(sub_stats.get(roll_stat, 0)) + float(roll_amount), 4)
                 upgrade_counts = sub_stats.setdefault("__upgrade_counts__", {})
                 if isinstance(upgrade_counts, dict):
@@ -419,6 +443,7 @@ class PvpStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
                 (int(cost), str(user_id)),
             )
+            self._refresh(connection, str(user_id), int(now_ms))
             self.base._record_economy_currency_change(
                 connection, str(user_id), "fumao_coins", -int(cost), "PvP 聖遺物升級", int(now_ms)
             )
@@ -472,6 +497,8 @@ class PvpStore:
                 level += 1
                 main_value = float(next_main_value)
                 if roll_stat:
+                    if str(roll_stat).startswith("__"):
+                        raise ValueError("無效的聖遺物副詞條")
                     sub_stats[roll_stat] = round(float(sub_stats.get(roll_stat, 0)) + float(roll_amount), 4)
                     upgrade_counts = sub_stats.setdefault("__upgrade_counts__", {})
                     if isinstance(upgrade_counts, dict):
@@ -493,6 +520,7 @@ class PvpStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
                 (total_cost, str(user_id)),
             )
+            self._refresh(connection, str(user_id), int(now_ms))
             self.base._record_economy_currency_change(
                 connection, str(user_id), "fumao_coins", -total_cost,
                 f"PvP 聖遺物批量升級 x{len(upgrades)}", int(now_ms),
@@ -531,6 +559,7 @@ class PvpStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
                 (cost, str(user_id)),
             )
+            self._refresh(connection, str(user_id), int(now_ms))
             self.base._record_economy_currency_change(
                 connection, str(user_id), "fumao_coins", -cost,
                 f"PvP 秘境入場 Lv.{int(required_level)}", int(now_ms),
@@ -554,6 +583,7 @@ class PvpStore:
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
                 (refund, str(user_id)),
             )
+            self._refresh(connection, str(user_id), int(now_ms))
             self.base._record_economy_currency_change(
                 connection, str(user_id), "fumao_coins", refund, "PvP 分解聖遺物", int(now_ms)
             )
@@ -575,16 +605,17 @@ class PvpStore:
             requested = max(0, int(theft_amount))
             remaining = max(0, defender_profile["loss_cap"] - defender_profile["lost_coins"])
             formula_loss = remaining + (requested - remaining) * 0.5 if requested > remaining else requested
-            actual = min(int(defender["fumao_coins"]), max(0, int(formula_loss)))
+            attacker_reward = requested
+            defender_loss = min(int(defender["fumao_coins"]), max(0, int(formula_loss)))
             connection.execute(
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
-                (actual, str(attacker_id)),
+                (attacker_reward, str(attacker_id)),
             )
             connection.execute(
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
-                (actual, str(defender_id)),
+                (defender_loss, str(defender_id)),
             )
-            lost = defender_profile["lost_coins"] + actual
+            lost = defender_profile["lost_coins"] + defender_loss
             closed = requested > remaining or lost >= defender_profile["loss_cap"]
             connection.execute(
                 """
@@ -604,12 +635,16 @@ class PvpStore:
                     str(defender_id),
                 ),
             )
+            self._refresh(connection, str(attacker_id), int(now_ms))
+            if not closed:
+                defender_after = self._refresh(connection, str(defender_id), int(now_ms))
+                closed = not defender_after["enabled"]
             payload = dict(details)
-            payload.update({"requested_theft": requested, "actual_loss": actual,
+            payload.update({"requested_theft": requested, "actual_loss": defender_loss,
                             "remaining_before": remaining, "closed": closed})
             for actor, target, action, amount in (
-                (attacker_id, defender_id, "attack", actual),
-                (defender_id, attacker_id, "defended", -actual),
+                (attacker_id, defender_id, "attack", attacker_reward),
+                (defender_id, attacker_id, "defended", -defender_loss),
             ):
                 connection.execute(
                     """
@@ -619,14 +654,15 @@ class PvpStore:
                     (str(actor), str(target), action, int(amount), json.dumps(payload, ensure_ascii=False), int(now_ms)),
                 )
             self.base._record_economy_currency_change(
-                connection, str(attacker_id), "fumao_coins", actual, "PvP 偷竊", int(now_ms)
+                connection, str(attacker_id), "fumao_coins", attacker_reward, "PvP 偷竊", int(now_ms)
             )
             self.base._record_economy_currency_change(
-                connection, str(defender_id), "fumao_coins", -actual, "PvP 被偷竊", int(now_ms)
+                connection, str(defender_id), "fumao_coins", -defender_loss, "PvP 被偷竊", int(now_ms)
             )
             return {
-                "amount": actual, "requested_amount": requested, "closed": closed,
-                "attacker_balance": int(attacker["fumao_coins"]) + actual,
-                "defender_balance": int(defender["fumao_coins"]) - actual,
+                "amount": attacker_reward, "requested_amount": requested,
+                "defender_loss": defender_loss, "closed": closed,
+                "attacker_balance": int(attacker["fumao_coins"]) + attacker_reward,
+                "defender_balance": int(defender["fumao_coins"]) - defender_loss,
                 "defender_lost": lost, "defender_cap": defender_profile["loss_cap"],
             }
