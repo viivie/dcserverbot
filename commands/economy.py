@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import time
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ DAILY_BASE_REWARD = 1_000
 QUICK_CHECKIN_GUILD_ID = 1512762043504267284
 QUICK_CHECKIN_CHANNEL_ID = 1554087496898453514
 ROBBERY_COOLDOWN_SECONDS = 1.0
+ROBBERY_LOSS_MIN = 100
+ROBBERY_LOSS_MAX = 1_000
 CURRENCY_COOLDOWNS: dict[int, float] = {}
 CURRENCY_EMOJIS = {
     "FumaoCoin": "<:FumaoCoin:1554060935725973554>",
@@ -47,49 +50,75 @@ class EconomyLevel:
     daily_multiplier: float
 
 
-# Values are copied from 芙帽教簽到等級系統換算表.xlsx. The saved-hour
+def crystal_cost_for_level(level: int) -> int:
+    """Calculate crystal requirements using the supplied Excel formula."""
+    x = int(level)
+    if x <= 10:
+        value = 0.5 * max(0, x - 3) ** 2.2
+    elif x <= 20:
+        value = 10_000 * ((x - 10) / 10) ** 2.2
+    else:
+        value = 10_000 * (1 + (x - 20) / 10) ** 4
+
+    if value < 10:
+        return int(math.floor(value + 0.5))
+    integer_digits = len(str(int(value)))
+    rounding_places = integer_digits - 2
+    factor = 10 ** rounding_places
+    return int(math.floor(value / factor + 0.5) * factor)
+
+
+# Values are copied from 芙帽教等級系統換算表.xlsx. The saved-hour
 # capacity is capped at 168 hours for every level from Lv.15 onward.
 LEVELS = (
     EconomyLevel(1, 0, 0, 1, 1.00, 1.00),
     EconomyLevel(2, 1_000, 0, 2, 1.02, 1.01),
     EconomyLevel(3, 1_200, 0, 3, 1.16, 1.08),
-    EconomyLevel(4, 1_600, 0, 4, 1.54, 1.27),
-    EconomyLevel(5, 2_500, 1, 5, 2.28, 1.64),
-    EconomyLevel(6, 4_000, 2, 6, 3.50, 2.25),
-    EconomyLevel(7, 6_900, 6, 8, 5.32, 3.16),
-    EconomyLevel(8, 13_000, 11, 12, 7.86, 4.43),
-    EconomyLevel(9, 24_000, 17, 18, 11.24, 6.12),
-    EconomyLevel(10, 50_000, 26, 24, 15.58, 8.29),
-    EconomyLevel(11, 110_000, 36, 36, 21.00, 11.00),
-    EconomyLevel(12, 240_000, 49, 48, 27.62, 14.31),
-    EconomyLevel(13, 540_000, 63, 72, 35.56, 18.28),
-    EconomyLevel(14, 1_300_000, 79, 120, 44.94, 22.97),
-    EconomyLevel(15, 3_300_000, 98, 168, 55.88, 28.44),
-    EconomyLevel(16, 8_500_000, 120, 168, 68.50, 34.75),
-    EconomyLevel(17, 23_000_000, 140, 168, 82.92, 41.96),
-    EconomyLevel(18, 63_000_000, 170, 168, 99.26, 50.13),
-    EconomyLevel(19, 180_000_000, 190, 168, 117.64, 59.32),
-    EconomyLevel(20, 530_000_000, 220, 168, 138.18, 69.59),
-    EconomyLevel(21, 1_600_000_000, 250, 168, 161.00, 81.00),
-    EconomyLevel(22, 5_100_000_000, 290, 168, 186.22, 93.61),
-    EconomyLevel(23, 17_000_000_000, 330, 168, 213.96, 107.48),
-    EconomyLevel(24, 55_000_000_000, 360, 168, 244.34, 122.67),
-    EconomyLevel(25, 190_000_000_000, 410, 168, 277.48, 139.24),
-    EconomyLevel(26, 660_000_000_000, 450, 168, 313.50, 157.25),
-    EconomyLevel(27, 2_400_000_000_000, 500, 168, 352.52, 176.76),
-    EconomyLevel(28, 8_800_000_000_000, 540, 168, 394.66, 197.83),
-    EconomyLevel(29, 33_000_000_000_000, 590, 168, 440.04, 220.52),
-    EconomyLevel(30, 130_000_000_000_000, 650, 168, 488.78, 244.89),
+    EconomyLevel(4, 1_600, 1, 4, 1.54, 1.27),
+    EconomyLevel(5, 2_500, 2, 5, 2.28, 1.64),
+    EconomyLevel(6, 4_000, 6, 6, 3.50, 2.25),
+    EconomyLevel(7, 6_900, 11, 8, 5.32, 3.16),
+    EconomyLevel(8, 13_000, 17, 12, 7.86, 4.43),
+    EconomyLevel(9, 24_000, 26, 18, 11.24, 6.12),
+    EconomyLevel(10, 50_000, 36, 24, 15.58, 8.29),
+    EconomyLevel(11, 110_000, 63, 36, 21.00, 11.00),
+    EconomyLevel(12, 240_000, 290, 48, 27.62, 14.31),
+    EconomyLevel(13, 540_000, 710, 72, 35.56, 18.28),
+    EconomyLevel(14, 1_300_000, 1_300, 120, 44.94, 22.97),
+    EconomyLevel(15, 3_300_000, 2_200, 168, 55.88, 28.44),
+    EconomyLevel(16, 8_500_000, 3_300, 168, 68.50, 34.75),
+    EconomyLevel(17, 23_000_000, 4_600, 168, 82.92, 41.96),
+    EconomyLevel(18, 63_000_000, 6_100, 168, 99.26, 50.13),
+    EconomyLevel(19, 180_000_000, 7_900, 168, 117.64, 59.32),
+    EconomyLevel(20, 530_000_000, 10_000, 168, 138.18, 69.59),
+    EconomyLevel(21, 1_600_000_000, 15_000, 168, 161.00, 81.00),
+    EconomyLevel(22, 5_100_000_000, 21_000, 168, 186.22, 93.61),
+    EconomyLevel(23, 17_000_000_000, 29_000, 168, 213.96, 107.48),
+    EconomyLevel(24, 55_000_000_000, 38_000, 168, 244.34, 122.67),
+    EconomyLevel(25, 190_000_000_000, 51_000, 168, 277.48, 139.24),
+    EconomyLevel(26, 660_000_000_000, 66_000, 168, 313.50, 157.25),
+    EconomyLevel(27, 2_400_000_000_000, 84_000, 168, 352.52, 176.76),
+    EconomyLevel(28, 8_800_000_000_000, 100_000, 168, 394.66, 197.83),
+    EconomyLevel(29, 33_000_000_000_000, 130_000, 168, 440.04, 220.52),
+    EconomyLevel(30, 130_000_000_000_000, 160_000, 168, 488.78, 244.89),
 )
 
 
 def level_data(level: int) -> EconomyLevel:
-    return LEVELS[max(1, min(int(level), len(LEVELS))) - 1]
+    current = LEVELS[max(1, min(int(level), len(LEVELS))) - 1]
+    return EconomyLevel(
+        current.level,
+        current.coin_cost,
+        crystal_cost_for_level(current.level),
+        current.saved_hours,
+        current.hourly_multiplier,
+        current.daily_multiplier,
+    )
 
 
 def next_level(account: dict[str, Any]) -> EconomyLevel | None:
     current = int(account["level"])
-    return LEVELS[current] if current < len(LEVELS) else None
+    return level_data(current + 1) if current < len(LEVELS) else None
 
 
 def can_upgrade(account: dict[str, Any]) -> bool:
@@ -154,7 +183,7 @@ def _balance_line(account: dict[str, Any], guild: discord.Guild | None) -> str:
     coin = _currency_emoji(guild, "FumaoCoin")
     return (
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
-        f"簽到等級：Lv.{account['level']}"
+        f"等級：Lv.{account['level']}"
     )
 
 
@@ -222,7 +251,7 @@ def _upgrade_embed(
 
     embed = discord_module.Embed(title=title, color=EMBED_COLOR)
     if target is None:
-        embed.description = "你已經達到最高簽到等級。"
+        embed.description = "你已經達到最高等級。"
         return embed
 
     embed.add_field(
@@ -263,7 +292,7 @@ def _upgrade_embed(
         inline=False,
     )
     if confirm:
-        embed.set_footer(text="請確認是否要支付費用並升級簽到等級。")
+        embed.set_footer(text="請確認是否要支付費用並升級等級。")
     else:
         embed.set_footer(text="確認有足夠資源後，可按下方按鈕升級。")
     return embed
@@ -307,7 +336,7 @@ def _checkin_sections(
 
     balance = (
         f"當前餘額：{_number(account['fumao_coins'])} {coin} 芙帽幣．"
-        f"簽到等級：Lv.{account['level']}"
+        f"等級：Lv.{account['level']}"
     )
     return [
         (
@@ -413,7 +442,7 @@ def _quick_checkin_sections(
         (
             f"### 簽到結果\n{received_text}"
             f"當前餘額：**{_number(current_account['fumao_coins'])}** {coin} 芙帽幣．"
-            f"簽到等級：Lv.{current_account['level']}\n"
+            f"等級：Lv.{current_account['level']}\n"
             f"今天 {_period_time(datetime.now(TAIPEI))}"
         ),
     ]
@@ -453,7 +482,7 @@ class CheckinLayoutView(discord.ui.LayoutView):
             container.add_item(discord.ui.Separator())
             action_row = discord.ui.ActionRow()
             upgrade_button = discord.ui.Button(
-                label="升級簽到等級",
+                label="升級等級",
                 style=discord.ButtonStyle.primary,
             )
             upgrade_button.callback = self._show_upgrade
@@ -463,17 +492,24 @@ class CheckinLayoutView(discord.ui.LayoutView):
         self.add_item(container)
 
     async def _show_upgrade(self, interaction: discord.Interaction) -> None:
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         account = await asyncio.to_thread(
             self.context.store.economy_account,
             str(interaction.user.id),
         )
         if not can_upgrade(account):
-            await interaction.response.send_message(
-                view=v2_view_from_embed(
-                    _upgrade_embed(discord, account, interaction.guild, confirm=False)
-                ),
-                ephemeral=True,
-            )
+            try:
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        _upgrade_embed(discord, account, interaction.guild, confirm=False)
+                    )
+                )
+            except discord.NotFound:
+                pass
             return
 
         private_view = UpgradeView(
@@ -483,13 +519,15 @@ class CheckinLayoutView(discord.ui.LayoutView):
             None,
         )
         private_view._set_confirmation_buttons()
-        await interaction.response.send_message(
-            view=v2_view_from_embed(
-                _upgrade_embed(discord, account, interaction.guild, confirm=True),
-                legacy_view=private_view,
-            ),
-            ephemeral=True,
-        )
+        try:
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _upgrade_embed(discord, account, interaction.guild, confirm=True),
+                    legacy_view=private_view,
+                )
+            )
+        except discord.NotFound:
+            pass
 
 
 async def handle_quick_checkin(message: discord.Message, context: CommandContext) -> bool:
@@ -540,7 +578,7 @@ class UpgradeView(discord.ui.View):
 
     def _set_upgrade_button(self) -> None:
         self.clear_items()
-        button = discord.ui.Button(label="升級簽到等級", style=discord.ButtonStyle.primary)
+        button = discord.ui.Button(label="升級等級", style=discord.ButtonStyle.primary)
         button.callback = self._show_confirmation
         self.add_item(button)
 
@@ -563,17 +601,24 @@ class UpgradeView(discord.ui.View):
         # The public check-in card may belong to someone else. The private
         # upgrade screen always belongs to the person who clicked the button.
         clicked_user_id = interaction.user.id
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         account = await asyncio.to_thread(
             self.context.store.economy_account,
             str(clicked_user_id),
         )
         if not can_upgrade(account):
-            await interaction.response.send_message(
-                view=v2_view_from_embed(
-                    _upgrade_embed(discord, account, self.guild, confirm=False)
-                ),
-                ephemeral=True,
-            )
+            try:
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        _upgrade_embed(discord, account, self.guild, confirm=False)
+                    )
+                )
+            except discord.NotFound:
+                pass
             return
 
         private_view = UpgradeView(
@@ -583,23 +628,34 @@ class UpgradeView(discord.ui.View):
             None,
         )
         private_view._set_confirmation_buttons()
-        await interaction.response.send_message(
-            view=v2_view_from_embed(
-                _upgrade_embed(discord, account, interaction.guild, confirm=True),
-                legacy_view=private_view,
-            ),
-            ephemeral=True,
-        )
+        try:
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(
+                    _upgrade_embed(discord, account, interaction.guild, confirm=True),
+                    legacy_view=private_view,
+                )
+            )
+        except discord.NotFound:
+            pass
 
     async def _confirm_upgrade(self, interaction: discord.Interaction) -> None:
         if await self._deny_other_user(interaction):
             return
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            self.stop()
+            return
+
         account = await asyncio.to_thread(self.context.store.economy_account, str(self.user_id))
         target = next_level(account)
         if target is None:
-            await interaction.response.edit_message(
-                view=v2_view_from_embed(discord.Embed(title="已達最高等級", color=EMBED_COLOR))
-            )
+            try:
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(discord.Embed(title="已達最高等級", color=EMBED_COLOR))
+                )
+            except discord.NotFound:
+                pass
             self.stop()
             return
 
@@ -612,7 +668,7 @@ class UpgradeView(discord.ui.View):
         )
         if result.get("upgraded"):
             embed = discord.Embed(
-                title=f"✅ 簽到等級升級成功：Lv.{result['level']}",
+                title=f"✅ 等級升級成功：Lv.{result['level']}",
                 description=(
                     f"保存小時數：{level_data(target.level - 1).saved_hours}h ➜ **{target.saved_hours}h**\n"
                     f"每小時簽到倍率：{_multiplier(level_data(target.level - 1).hourly_multiplier)} ➜ **{_multiplier(target.hourly_multiplier)}**\n"
@@ -627,21 +683,27 @@ class UpgradeView(discord.ui.View):
                 description="目前餘額不足，或這個升級已經被其他操作完成。",
                 color=0xE74C3C,
             )
-        await interaction.response.edit_message(view=v2_view_from_embed(embed))
+        try:
+            await interaction.edit_original_response(view=v2_view_from_embed(embed))
+        except discord.NotFound:
+            pass
         self.stop()
 
     async def _cancel_upgrade(self, interaction: discord.Interaction) -> None:
         if await self._deny_other_user(interaction):
             return
-        await interaction.response.edit_message(
-            view=v2_view_from_embed(
-                discord.Embed(
-                    title="已取消升級",
-                    description="這次沒有扣除任何資源。",
-                    color=0x95A5A6,
-                )
-            ),
-        )
+        try:
+            await interaction.response.edit_message(
+                view=v2_view_from_embed(
+                    discord.Embed(
+                        title="已取消升級",
+                        description="這次沒有扣除任何資源。",
+                        color=0x95A5A6,
+                    )
+                ),
+            )
+        except discord.NotFound:
+            pass
         self.stop()
 
 
@@ -723,7 +785,7 @@ def register_economy(
         requested_amount = (
             random.randint(1_000, 10_000)
             if success
-            else random.randint(100, 500)
+            else random.randint(ROBBERY_LOSS_MIN, ROBBERY_LOSS_MAX)
         )
         account = await asyncio.to_thread(
             context.store.change_economy_currency,
@@ -774,7 +836,7 @@ def register_economy(
                 f"> `{_number(account['fumao_coins'])}` 芙帽幣 {coin}\n"
                 f"> `{_number(account['crystals'])}` 水晶 {crystal}\n"
                 f"> `{_number(account['grace'])}` 神恩 {grace}\n\n"
-                f"簽到等級：**Lv.{account['level']}**\n"
+                f"等級：**Lv.{account['level']}**\n"
                 f"查詢時間：**{_period_time(now)}**"
             ),
             color=EMBED_COLOR,

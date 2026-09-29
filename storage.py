@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import threading
 import time
@@ -264,7 +265,16 @@ class WorshipStore:
                 "total": int(total_row[0]) if total_row else 0,
             }
 
-    def apply_worship(self, actor_id: str, display_name: str) -> dict[str, Any]:
+    def apply_worship(
+        self,
+        actor_id: str,
+        display_name: str,
+        tribute_percent: int = 1,
+    ) -> dict[str, Any]:
+        tribute_percent = int(tribute_percent)
+        if not 1 <= tribute_percent <= 10:
+            raise ValueError("獻祭百分比必須介於 1 到 10。")
+
         with self.lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT streak, last_date FROM actors WHERE actor_id = ?",
@@ -275,16 +285,69 @@ class WorshipStore:
             today = taipei_today()
             next_value, counted = next_streak(last_date, old_streak, today)
 
-            if counted:
-                connection.execute(
-                    """
-                    INSERT INTO actors(actor_id, streak, last_date) VALUES (?, ?, ?)
-                    ON CONFLICT(actor_id) DO UPDATE SET streak = excluded.streak, last_date = excluded.last_date
-                    """,
-                    (actor_id, next_value, today),
-                )
-                connection.execute(
-                    "UPDATE metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'total'"
+            account = self._select_economy_account(connection, str(actor_id).removeprefix("discord:"))
+            if not counted:
+                total_row = connection.execute("SELECT value FROM metadata WHERE key = 'total'").fetchone()
+                return {
+                    "displayName": display_name,
+                    "total": int(total_row[0]) if total_row else 0,
+                    "streak": next_value,
+                    "counted": False,
+                    "reason": "already_counted",
+                    "balance": int(account["fumao_coins"]),
+                    "tribute_percent": tribute_percent,
+                    "tribute_amount": 0,
+                    "crystals_reward": 0,
+                }
+
+            balance = int(account["fumao_coins"])
+            tribute_amount = max(100, balance * tribute_percent // 100)
+            if balance < tribute_amount:
+                total_row = connection.execute("SELECT value FROM metadata WHERE key = 'total'").fetchone()
+                return {
+                    "displayName": display_name,
+                    "total": int(total_row[0]) if total_row else 0,
+                    "streak": next_value,
+                    "counted": False,
+                    "reason": "insufficient_funds",
+                    "balance": balance,
+                    "tribute_percent": tribute_percent,
+                    "tribute_amount": tribute_amount,
+                    "crystals_reward": 0,
+                }
+
+            crystals_reward = random.randint(1, 5) if random.random() < tribute_percent * 0.07 else 0
+            user_id = str(actor_id).removeprefix("discord:")
+            connection.execute(
+                """
+                INSERT INTO actors(actor_id, streak, last_date) VALUES (?, ?, ?)
+                ON CONFLICT(actor_id) DO UPDATE SET streak = excluded.streak, last_date = excluded.last_date
+                """,
+                (actor_id, next_value, today),
+            )
+            connection.execute(
+                "UPDATE metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'total'"
+            )
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ?, crystals = crystals + ? WHERE user_id = ?",
+                (tribute_amount, crystals_reward, user_id),
+            )
+            self._record_economy_currency_change(
+                connection,
+                user_id,
+                "fumao_coins",
+                -tribute_amount,
+                f"膜拜獻祭 {tribute_percent}%",
+                int(time.time() * 1000),
+            )
+            if crystals_reward:
+                self._record_economy_currency_change(
+                    connection,
+                    user_id,
+                    "crystals",
+                    crystals_reward,
+                    "膜拜獻祭獎勵",
+                    int(time.time() * 1000),
                 )
 
             total_row = connection.execute("SELECT value FROM metadata WHERE key = 'total'").fetchone()
@@ -293,6 +356,11 @@ class WorshipStore:
                 "total": int(total_row[0]) if total_row else 0,
                 "streak": next_value,
                 "counted": counted,
+                "reason": "counted",
+                "balance": balance - tribute_amount,
+                "tribute_percent": tribute_percent,
+                "tribute_amount": tribute_amount,
+                "crystals_reward": crystals_reward,
             }
 
     @staticmethod
