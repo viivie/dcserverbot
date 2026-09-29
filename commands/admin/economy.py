@@ -38,8 +38,9 @@ def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
     if not logs:
         embed.add_field(name="紀錄", value="目前沒有獲取紀錄。", inline=False)
     else:
+        display_logs = logs[:10]
         lines: list[str] = []
-        for item in logs:
+        for item in display_logs:
             timestamp = datetime.fromtimestamp(
                 int(item["created_at"]) / 1000,
                 tz=timezone.utc,
@@ -54,13 +55,13 @@ def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
                 f"{sign}{amount:,} {emoji} {label}"
             )
 
-        for start in range(0, len(lines), 10):
-            end = min(start + 10, len(lines))
-            embed.add_field(
-                name=f"紀錄 {start + 1}-{end}",
-                value="\n".join(lines[start:end]),
-                inline=False,
-            )
+        if len(logs) > len(display_logs):
+            lines.append(f"…（還有 {len(logs) - len(display_logs)} 筆紀錄，請縮小查詢範圍或稍後再查）")
+        embed.add_field(
+            name=f"最近 {len(display_logs)} 筆紀錄",
+            value="\n".join(lines)[:3600],
+            inline=False,
+        )
 
     embed.set_footer(text="時間為 UTC+8｜正數為增加，負數為扣除")
     return v2_view_from_embed(embed)
