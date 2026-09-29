@@ -643,7 +643,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                         view=v2_view_from_embed(
                             discord.Embed(
                                 title="❌ SQL 查詢失敗",
-                                description=str(error)[:4000],
+                                description=str(error)[:3600],
                                 color=0xE74C3C,
                             )
                         ),

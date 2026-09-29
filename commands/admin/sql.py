@@ -50,7 +50,7 @@ class SqlConfirmView(discord.ui.View):
         except sqlite3.Error as error:
             embed = discord.Embed(
                 title="❌ SQL 執行失敗",
-                description=str(error)[:4000],
+                description=str(error)[:3600],
                 color=0xE74C3C,
             )
         try:
@@ -106,7 +106,7 @@ class SqlConfirmView(discord.ui.View):
             except sqlite3.Error as error:
                 embed = discord.Embed(
                     title="❌ SQL 執行失敗",
-                    description=str(error)[:4000],
+                description=str(error)[:3600],
                     color=0xE74C3C,
                 )
         elif button_number == 2:
@@ -147,5 +147,7 @@ def sql_result_embed(result: dict[str, Any]) -> discord.Embed:
         lines.append(" | ".join("NULL" if value is None else str(value) for value in row))
     if result["has_more"]:
         lines.append("…（結果超過 50 筆，僅顯示前 50 筆）")
-    description = "\n".join(lines)[:4000] or "（查詢沒有結果）"
+    # Components V2 adds the card title/field wrapper around this text.
+    # Keep the description below Discord's 4000-character display limit.
+    description = "\n".join(lines)[:3600] or "（查詢沒有結果）"
     return discord.Embed(title="✅ SQL 查詢結果", description=description, color=0x2ECC71)

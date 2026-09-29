@@ -159,16 +159,29 @@ def _artifact_list_embed(
     if not page_items:
         lines.append("\n目前沒有聖遺物，請先挑戰 `/pvp 秘境`。")
     else:
-        lines.extend(
-            (
+        for item in page_items:
+            lines.append(
                 f"{item['id']} {_artifact_color_symbol(item['color'])}(Lv.{item['level']}) "
                 f"{_artifact_set_name(str(item.get('set_id', '')))} {item['slot']}"
-                f"{' ✅' if item['equipped'] else ''}\n"
-                f"　{_artifact_stat_text(item['main_stat'], float(item['main_value']))}　"
-                f"副詞條 {sum(1 for stat in item.get('sub_stats', {}) if not str(stat).startswith('__'))} 條"
+                f"{' ✅' if item['equipped'] else ''}"
             )
-            for item in page_items
-        )
+            lines.append(
+                f"　{_artifact_stat_text(item['main_stat'], float(item['main_value']))}"
+            )
+            upgrade_counts = item.get("sub_stats", {}).get("__upgrade_counts__", {})
+            visible_sub_stats = {
+                stat: value
+                for stat, value in item.get("sub_stats", {}).items()
+                if not str(stat).startswith("__")
+            }
+            for stat, value in visible_sub_stats.items():
+                count = upgrade_counts.get(stat, 0) if isinstance(upgrade_counts, dict) else 0
+                lines.append(
+                    f"　{_artifact_stat_text(stat, float(value))}"
+                    f"{_upgrade_count_marker(count)}"
+                )
+            if item is not page_items[-1]:
+                lines.append("")
     embed = discord.Embed(
         title=title,
         description="\n".join(lines),
@@ -570,6 +583,10 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
         attacker_id = str(interaction.user.id)
         defender_id = str(target.id)
         try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
+        try:
             attacker_profile = await asyncio.to_thread(store.profile, attacker_id)
             artifacts = await asyncio.to_thread(store.artifacts, attacker_id)
             damage = calculate_damage(attacker_profile, artifacts)
@@ -581,7 +598,10 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
                 {"damage": damage["damage"], "r": damage["r"], "critical": damage["critical"], "k_atk": damage["k_atk"], "k_def": damage["k_def"]},
             )
         except ValueError as error:
-            await interaction.response.send_message(view=v2_view_from_embed(_error_embed(str(error))), ephemeral=True)
+            try:
+                await interaction.edit_original_response(view=v2_view_from_embed(_error_embed(str(error))))
+            except discord.NotFound:
+                pass
             return
         critical_line = "💥 暴擊！\n" if damage["critical"] else ""
         embed = discord.Embed(
@@ -597,7 +617,10 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
         )
         if result["closed"]:
             embed.set_footer(text="防守方已達到損失上限，PvP 已強制關閉。")
-        await interaction.response.send_message(view=v2_view_from_embed(embed))
+        try:
+            await interaction.edit_original_response(view=v2_view_from_embed(embed))
+        except discord.NotFound:
+            pass
 
     @pvp.command(name="升級", description="開啟 PvP 直接升級介面")
     @app_commands.guild_only()
