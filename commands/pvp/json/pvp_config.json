@@ -1,0 +1,54 @@
+{
+  "base_stats": {
+    "atk": 1000,
+    "def": 1000,
+    "hp": 10000
+  },
+  "cooldowns": {
+    "toggle_hours": 12,
+    "forced_hours": 24
+  },
+  "rules": {
+    "minimum_open_coins": 10000,
+    "loss_cap_rate": 0.1,
+    "growth_threshold": 2.0,
+    "forced_close_threshold": 0.15,
+    "prize_pool_rate": 0.15
+  },
+  "damage": {
+    "k_min": 0.8,
+    "k_max": 1.2,
+    "max_attacks": 3,
+    "initial_attacks": 1
+  },
+  "direct_upgrade": {
+    "coin_cost": 10000,
+    "amounts": {
+      "atk": 100,
+      "def": 100,
+      "atk_percent": 0.01,
+      "def_percent": 0.01,
+      "hp": 500,
+      "hp_percent": 0.01,
+      "crit_rate": 0.01,
+      "crit_damage": 0.1
+    },
+    "caps": {
+      "crit_rate": 0.4,
+      "crit_damage": 20.0
+    }
+  },
+  "artifact_colors": {
+    "green": {"label": "🟢 綠色", "max_level": 8, "ratio": 0.24, "original_value": 8000},
+    "blue": {"label": "🔵 藍色", "max_level": 12, "ratio": 0.48, "original_value": 12000},
+    "purple": {"label": "🟣 紫色", "max_level": 16, "ratio": 0.8, "original_value": 16000},
+    "yellow": {"label": "🟡 黃色", "max_level": 20, "ratio": 1.0, "original_value": 20000}
+  },
+  "artifact_upgrade_costs": {
+    "green": [1200, 1500, 1775, 2075, 2375, 2675, 3000, 3325],
+    "blue": [1800, 2225, 2650, 3100, 3550, 4000, 4500, 5000, 5525, 6075, 6625, 7225],
+    "purple": [2400, 2975, 3550, 4125, 4725, 5350, 6000, 6675, 7375, 8100, 8850, 9625, 10425, 12125, 14075, 16300],
+    "yellow": [3000, 3725, 4425, 5150, 5900, 6675, 7500, 8350, 9225, 10125, 11050, 12025, 13025, 15150, 17600, 20375, 23500, 27050, 31050, 35575]
+  },
+  "domain_difficulties": [4, 8, 10, 12, 15]
+}

@@ -148,6 +148,7 @@ class WorshipStore:
                     created_at INTEGER NOT NULL,
                     PRIMARY KEY (guild_id, actor_id, master_id)
                 );
+
                 """
             )
             columns = {
@@ -888,15 +889,10 @@ class WorshipStore:
             if prohibited is not None:
                 raise ValueError("你無法下注這個賭盤的指定選項")
 
-            currency_columns = {
-                "fumao_coins": "fumao_coins",
-                "crystals": "crystals",
-                "grace": "grace",
-            }
             currency = str(currency)
-            currency_column = currency_columns.get(currency)
-            if currency_column is None:
-                raise ValueError("這個賭盤使用了未知的貨幣種類")
+            if currency != "fumao_coins":
+                raise ValueError("賭盤只能使用芙帽幣下注")
+            currency_column = "fumao_coins"
             account = self._select_economy_account(connection, str(user_id))
             if int(account[currency]) < int(amount):
                 raise ValueError("下注貨幣餘額不足")

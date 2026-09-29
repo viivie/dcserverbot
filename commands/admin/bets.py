@@ -18,22 +18,6 @@ BET_CURRENCIES = {
     "crystals": ("Crystal", "水晶", "<:Crystal:1554060934140403815>"),
     "grace": ("grace", "神恩", "<:grace:1554060937244180542>"),
 }
-BET_CURRENCY_ALIASES = {
-    "1": "fumao_coins",
-    "2": "crystals",
-    "3": "grace",
-    "fumao": "fumao_coins",
-    "fumaocoin": "fumao_coins",
-    "fumao_coin": "fumao_coins",
-    "fumao_coins": "fumao_coins",
-    "芙帽幣": "fumao_coins",
-    "coin": "fumao_coins",
-    "crystal": "crystals",
-    "crystals": "crystals",
-    "水晶": "crystals",
-    "grace": "grace",
-    "神恩": "grace",
-}
 MAX_OPTIONS = 5
 MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 BET_TEMPLATES = {
@@ -70,26 +54,11 @@ def _format_deadline(timestamp_ms: int) -> str:
     return deadline.strftime("%Y-%m-%d %H:%M:%S UTC+8")
 
 
-def _parse_currency(value: str) -> str:
-    currency = BET_CURRENCY_ALIASES.get(value.strip().casefold())
-    if currency is None:
-        raise ValueError("下注貨幣請輸入 `1` 芙帽幣、`2` 水晶或 `3` 神恩")
-    return currency
-
-
 def _currency_display(currency: str) -> tuple[str, str]:
     info = BET_CURRENCIES.get(currency)
     if info is None:
         return currency, f":{currency}:"
     return info[1], info[2]
-
-
-def _balance_placeholder(account: dict[str, Any]) -> str:
-    return (
-        f"1=芙帽幣 {int(account['fumao_coins']):,}｜"
-        f"2=水晶 {int(account['crystals']):,}｜"
-        f"3=神恩 {int(account['grace']):,}"
-    )
 
 
 def _format_currency_totals(totals: dict[str, int]) -> str:
@@ -217,7 +186,7 @@ def _bet_embed(
     )
     embed.set_footer(
         text=(
-            "按下狀況按鈕後，在私人表單選擇貨幣並輸入下注金額"
+            "按下狀況按鈕後，在私人表單輸入芙帽幣下注金額"
             if started and not closed
             else "管理員可使用 &start-bet 訊息ID 開放下注"
             if not started and not closed
@@ -401,13 +370,8 @@ class BetSetupView(discord.ui.View):
 
 
 class BetAmountModal(discord.ui.Modal, title="下注確認"):
-    currency_input = discord.ui.TextInput(
-        label="下注貨幣",
-        placeholder="1=芙帽幣、2=水晶、3=神恩",
-        max_length=30,
-    )
     amount = discord.ui.TextInput(
-        label="下注數量",
+        label="下注數量（芙帽幣）",
         placeholder="請輸入正整數，例如：500",
         max_length=20,
     )
@@ -424,15 +388,9 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
         self.message_id = message_id
         self.option_name = option_name
         self.account = account
-        self.currency_input.placeholder = _balance_placeholder(account)
+        self.amount.placeholder = f"目前餘額：{int(account['fumao_coins']):,}，例如：500"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            currency = _parse_currency(str(self.currency_input.value))
-        except ValueError as error:
-            await interaction.response.send_message(str(error), ephemeral=True)
-            return
-
         try:
             amount = int(str(self.amount.value).replace(",", ""))
             if amount < 1:
@@ -449,7 +407,7 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
                 self.message_id,
                 str(interaction.user.id),
                 self.option_name,
-                currency,
+                "fumao_coins",
                 amount,
                 int(time.time() * 1000),
             )
@@ -461,9 +419,9 @@ class BetAmountModal(discord.ui.Modal, title="下注確認"):
             title="✅ 下注成功",
             description=(
                 f"狀況：**{self.option_name}**\n"
-                f"下注：**{amount:,}** {_currency_display(currency)[1]} {_currency_display(currency)[0]}\n"
+                f"下注：**{amount:,}** {_currency_display('fumao_coins')[1]} 芙帽幣\n"
                 f"倍率：**{_format_odds(result['odds'])}**\n"
-                f"剩餘餘額：**{result['balance']:,}** {_currency_display(currency)[1]} {_currency_display(currency)[0]}"
+                f"剩餘餘額：**{result['balance']:,}** {_currency_display('fumao_coins')[1]} 芙帽幣"
             ),
             color=0x2ECC71,
         )

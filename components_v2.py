@@ -90,11 +90,12 @@ class V2CardView(discord.ui.LayoutView):
                 if isinstance(item, discord.ui.Button)
             ]
             if buttons:
-                container.add_item(discord.ui.Separator())
-                action_row = discord.ui.ActionRow()
-                for button in buttons:
-                    action_row.add_item(_clone_button(button))
-                container.add_item(action_row)
+                for start in range(0, len(buttons), 5):
+                    container.add_item(discord.ui.Separator())
+                    action_row = discord.ui.ActionRow()
+                    for button in buttons[start:start + 5]:
+                        action_row.add_item(_clone_button(button))
+                    container.add_item(action_row)
 
         self.add_item(container)
 
