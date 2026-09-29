@@ -60,13 +60,15 @@ def _profile_embed(
         f"狀態：**{enabled}**",
         f"目前芙帽幣：**{_number(profile.get('fumao_coins', 0))}**",
     ]
-    if profile.get("baseline_coins"):
+    if profile.get("enabled") and profile.get("baseline_coins"):
         remaining = max(0, int(profile["loss_cap"]) - int(profile["lost_coins"]))
         description.extend([
             f"PvP 基準金額：**{_number(profile['baseline_coins'])}**",
             f"損失上限：**{_number(profile['loss_cap'])}**",
             f"已損失：**{_number(profile['lost_coins'])}**　剩餘可損失：**{_number(remaining)}**",
         ])
+    elif not profile.get("enabled"):
+        description.append("目前未開啟 PvP")
     now_ms = int(time.time() * 1000)
     embed = discord.Embed(title=title, description="\n".join(description), color=COLOR)
     embed.add_field(
