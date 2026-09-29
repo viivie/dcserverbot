@@ -21,6 +21,19 @@
     "max_attacks": 3,
     "initial_attacks": 1
   },
+  "level_stats": {
+    "description": "以經濟等級為角色等級；以下是每提升 1 級增加的 PvP 屬性，Lv.1 不額外增加。",
+    "per_level": {
+      "atk": 100,
+      "def": 100,
+      "hp": 500,
+      "atk_percent": 0.1,
+      "def_percent": 0.1,
+      "hp_percent": 0.1,
+      "crit_rate": 0.02,
+      "crit_damage": 0.1
+    }
+  },
   "direct_upgrade": {
     "coin_cost": 10000,
     "amounts": {

@@ -12,7 +12,7 @@ import discord
 from components_v2 import v2_view_from_embed
 
 from .config import ARTIFACT_CONFIG, PVP_CONFIG, artifact_color, artifact_domain, direct_upgrade_config, pvp_rules
-from .engine import calculate_damage, drop_count, generate_artifact
+from .engine import calculate_damage, drop_count, generate_artifact, level_stats
 from .store import PvpStore
 
 if TYPE_CHECKING:
@@ -109,13 +109,13 @@ def _profile_embed(
         ),
         inline=False,
     )
+    stats = level_stats(profile)
     embed.add_field(
-        name="直接升級屬性",
+        name=f"Lv.{profile.get('level', 1)} 自帶屬性",
         value=(
-            f"ATK `{profile.get('direct_atk', 0):g}`　DEF `{profile.get('direct_def', 0):g}`\n"
-            f"ATK% `{_percent(profile.get('direct_atk_percent', 0))}`　DEF% `{_percent(profile.get('direct_def_percent', 0))}`\n"
-            f"HP `{profile.get('direct_hp', 0):g}`　HP% `{_percent(profile.get('direct_hp_percent', 0))}`\n"
-            f"暴擊率 `{_percent(profile.get('direct_crit_rate', 0))}`　爆傷 `{_percent(profile.get('direct_crit_damage', 0))}`"
+            f"ATK `{stats.get('atk', 0):g}`　DEF `{stats.get('def', 0):g}`　HP `{stats.get('hp', 0):g}`\n"
+            f"ATK% `{_percent(stats.get('atk_percent', 0))}`　DEF% `{_percent(stats.get('def_percent', 0))}`　HP% `{_percent(stats.get('hp_percent', 0))}`\n"
+            f"暴擊率 `{_percent(stats.get('crit_rate', 0))}`　爆傷 `{_percent(stats.get('crit_damage', 0))}`"
         ),
         inline=False,
     )
@@ -1374,17 +1374,6 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
             await interaction.edit_original_response(view=v2_view_from_embed(embed))
         except discord.NotFound:
             pass
-
-    @pvp.command(name="升級", description="開啟 PvP 直接升級介面")
-    @app_commands.guild_only()
-    async def pvp_upgrade(interaction: Any) -> None:
-        profile = await asyncio.to_thread(store.profile, str(interaction.user.id))
-        embed = _profile_embed(profile, "⚔️ PvP 升級介面")
-        embed.description = (embed.description or "") + f"\n\n每次升級消耗 **{_number(direct_upgrade_config()['coin_cost'])}** 芙帽幣。"
-        await interaction.response.send_message(
-            view=v2_view_from_embed(embed, legacy_view=UpgradeView(store, str(interaction.user.id))),
-            ephemeral=True,
-        )
 
     @pvp.command(name="聖遺物", description="查看與管理 PvP 聖遺物")
     @app_commands.guild_only()

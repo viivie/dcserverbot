@@ -18,10 +18,22 @@ def level_multiplier(level: int) -> float:
     return 1.0 + 0.015 * max(0, int(level) - 10) ** 1.8
 
 
+def level_stats(profile: dict[str, Any]) -> dict[str, float]:
+    """Return the PvP stats supplied by the user's economy/character level."""
+    level = max(1, int(profile.get("level", 1)))
+    per_level = PVP_CONFIG.get("level_stats", {}).get("per_level", {})
+    multiplier = level - 1
+    return {
+        key: float(value) * multiplier
+        for key, value in per_level.items()
+        if key in STAT_KEYS
+    }
+
+
 def equipped_stats(profile: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, float]:
     stats = {key: 0.0 for key in STAT_KEYS}
-    for key in STAT_KEYS:
-        stats[key] += float(profile.get(f"direct_{key}", 0))
+    for key, value in level_stats(profile).items():
+        stats[key] += value
     for artifact in artifacts:
         if not artifact.get("equipped"):
             continue
