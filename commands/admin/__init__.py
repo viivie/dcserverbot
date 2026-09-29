@@ -767,8 +767,8 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 amount = int(values[2].replace(",", ""))
             except ValueError:
                 amount = 0
-            if amount < 1 or amount > 9_000_000_000_000_000_000:
-                await message.channel.send("發放數量必須介於 1 到 9,000,000,000,000,000,000。")
+            if amount == 0 or abs(amount) > 9_000_000_000_000_000_000:
+                await message.channel.send("數量必須介於 -9,000,000,000,000,000,000 到 9,000,000,000,000,000,000，且不可為 0。")
                 return True
 
             labels = {
@@ -778,6 +778,8 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             }
             currency_label, emoji_name = labels[currency]
             emoji = CURRENCY_EMOJIS.get(emoji_name, f":{emoji_name}:")
+            action_label = "給予" if amount > 0 else "扣除"
+            display_amount = abs(amount)
 
             if all_users:
                 try:
@@ -791,9 +793,9 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                     return True
 
                 embed = discord.Embed(
-                    title="✅ 全體貨幣發放完成",
+                    title=f"✅ 全體貨幣{action_label}完成",
                     description=(
-                        f"已給予 **{account_count}** 個經濟帳戶，每個帳戶 **{amount:,}** "
+                        f"已{action_label} **{account_count}** 個經濟帳戶，每個帳戶 **{display_amount:,}** "
                         f"{currency_label} {emoji}。"
                     ),
                     color=0x2ECC71,
@@ -815,10 +817,11 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
                 await message.channel.send("發放貨幣失敗，請確認貨幣種類與數量。")
                 return True
 
+            changed_amount = abs(int(account.get("changed", amount)))
             embed = discord.Embed(
-                title="✅ 貨幣發放完成",
+                title=f"✅ 貨幣{action_label}完成",
                 description=(
-                    f"已給予 <@{values[0]}> **{amount:,}** {currency_label} {emoji}\n"
+                    f"已{action_label} <@{values[0]}> **{changed_amount:,}** {currency_label} {emoji}\n"
                     f"目前餘額：**{account[currency]:,}** {currency_label} {emoji}"
                 ),
                 color=0x2ECC71,

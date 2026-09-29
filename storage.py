@@ -662,26 +662,32 @@ class WorshipStore:
         column = columns.get(currency)
         if column is None:
             raise ValueError(f"未知的貨幣種類：{currency}")
-        if int(amount) < 1:
-            raise ValueError("發放數量必須大於 0")
+        if int(amount) == 0:
+            raise ValueError("數量不可為 0")
 
         with self.lock, self._connect() as connection:
             now_ms = int(time.time() * 1000)
             self._purge_economy_currency_logs(connection, now_ms)
-            self._select_economy_account(connection, str(user_id))
+            account = self._select_economy_account(connection, str(user_id))
+            requested = int(amount)
+            actual = requested
+            if requested < 0:
+                actual = -min(int(account[currency]), abs(requested))
             connection.execute(
                 f"UPDATE economy_accounts SET {column} = {column} + ? WHERE user_id = ?",
-                (int(amount), str(user_id)),
+                (actual, str(user_id)),
             )
             self._record_economy_currency_change(
                 connection,
                 str(user_id),
                 currency,
-                amount,
-                "管理員發放",
+                actual,
+                "管理員發放" if actual > 0 else "管理員扣除",
                 now_ms,
             )
-            return self._select_economy_account(connection, str(user_id))
+            account = self._select_economy_account(connection, str(user_id))
+            account["changed"] = actual
+            return account
 
     def grant_economy_currency_all(
         self,
@@ -697,8 +703,8 @@ class WorshipStore:
         column = columns.get(currency)
         if column is None:
             raise ValueError(f"未知的貨幣種類：{currency}")
-        if int(amount) < 1:
-            raise ValueError("發放數量必須大於 0")
+        if int(amount) == 0:
+            raise ValueError("數量不可為 0")
 
         with self.lock, self._connect() as connection:
             now_ms = int(time.time() * 1000)
@@ -709,22 +715,23 @@ class WorshipStore:
                     "SELECT user_id FROM economy_accounts"
                 ).fetchall()
             ]
-            cursor = connection.execute(
-                f"UPDATE economy_accounts SET {column} = {column} + ?",
-                (int(amount),),
-            )
-            connection.executemany(
-                """
-                INSERT INTO economy_currency_logs(
-                    user_id, currency, amount, source, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (user_id, currency, int(amount), "管理員全體發放", now_ms)
-                    for user_id in users
-                ],
-            )
-            return max(0, int(cursor.rowcount))
+            changed = 0
+            source = "管理員全體發放" if int(amount) > 0 else "管理員全體扣除"
+            for user_id in users:
+                account = self._select_economy_account(connection, user_id)
+                requested = int(amount)
+                actual = requested
+                if requested < 0:
+                    actual = -min(int(account[currency]), abs(requested))
+                connection.execute(
+                    f"UPDATE economy_accounts SET {column} = {column} + ? WHERE user_id = ?",
+                    (actual, user_id),
+                )
+                self._record_economy_currency_change(
+                    connection, user_id, currency, actual, source, now_ms
+                )
+                changed += 1
+            return changed
 
     def create_bet(
         self,
