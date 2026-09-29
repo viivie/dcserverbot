@@ -30,10 +30,6 @@ def pvp_rules() -> dict[str, Any]:
     return PVP_CONFIG["rules"]
 
 
-def direct_upgrade_config() -> dict[str, Any]:
-    return PVP_CONFIG["direct_upgrade"]
-
-
 def artifact_color(color: str) -> dict[str, Any]:
     return PVP_CONFIG["artifact_colors"].get(
         color,

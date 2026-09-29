@@ -34,23 +34,6 @@
       "crit_damage": 0.1
     }
   },
-  "direct_upgrade": {
-    "coin_cost": 10000,
-    "amounts": {
-      "atk": 100,
-      "def": 100,
-      "atk_percent": 0.01,
-      "def_percent": 0.01,
-      "hp": 500,
-      "hp_percent": 0.01,
-      "crit_rate": 0.01,
-      "crit_damage": 0.1
-    },
-    "caps": {
-      "crit_rate": 0.4,
-      "crit_damage": 20.0
-    }
-  },
   "artifact_colors": {
     "green": {"label": "🟢 綠色", "max_level": 8, "ratio": 0.24, "original_value": 8000},
     "blue": {"label": "🔵 藍色", "max_level": 12, "ratio": 0.48, "original_value": 12000},
