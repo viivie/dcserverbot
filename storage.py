@@ -1409,6 +1409,44 @@ class WorshipStore:
                 (str(user_id),),
             )
 
+    def clear_pvp_cooldowns(
+        self,
+        user_ids: list[str] | set[str] | None = None,
+        now_ms: int | None = None,
+    ) -> int:
+        """Clear PvP toggle and forced cooldowns for the selected profiles."""
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        with self.lock, self._connect() as connection:
+            if user_ids is None:
+                cursor = connection.execute(
+                    """
+                    UPDATE pvp_profiles
+                    SET toggle_cooldown_until = 0,
+                        forced_cooldown_until = 0,
+                        updated_at = ?
+                    WHERE toggle_cooldown_until > 0
+                       OR forced_cooldown_until > 0
+                    """,
+                    (now,),
+                )
+            else:
+                ids = list(dict.fromkeys(str(user_id) for user_id in user_ids))
+                if not ids:
+                    return 0
+                placeholders = ", ".join("?" for _ in ids)
+                cursor = connection.execute(
+                    f"""
+                    UPDATE pvp_profiles
+                    SET toggle_cooldown_until = 0,
+                        forced_cooldown_until = 0,
+                        updated_at = ?
+                    WHERE user_id IN ({placeholders})
+                      AND (toggle_cooldown_until > 0 OR forced_cooldown_until > 0)
+                    """,
+                    (now, *ids),
+                )
+            return max(0, int(cursor.rowcount))
+
     def has_prefix_command(self, user_id: str, command: str) -> bool:
         with self.lock, self._connect() as connection:
             row = connection.execute(

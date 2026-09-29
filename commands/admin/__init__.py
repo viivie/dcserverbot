@@ -34,7 +34,7 @@ ROLE_MENTION_PATTERN = re.compile(r"^<@&(\d{17,20})>$")
 BUTTON_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 GIVE_FORCE_WORDS = frozenset({"force", "forced", "強制", "直接"})
 PERMISSION_COMMANDS = frozenset({"say", "button", "snipe", "react", "delete", "give", "give_role", "id", "response", "create-bet", "ban-bet", "start-bet", "stop-bet", "resolve-bet", "log"})
-OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql"})
+OWNER_ONLY_COMMANDS = frozenset({"grant", "revoke", "perms", "sql", "clear-pvp-cooldown"})
 SNIPE_ALIASES = frozenset({"snipe", "deleted"})
 MONEY_LOG_ALIASES = frozenset({"log", "money-log", "moneylog"})
 STOP_BET_ALIASES = frozenset({"stop", "stop-bet"})
@@ -97,6 +97,10 @@ COMMAND_INFO = {
     "grant": ("授權某個使用者使用一個或多個指令。", "&grant 使用者ID 指令 [指令...]"),
     "revoke": ("撤銷某個使用者的一個或多個指令權限。", "&revoke 使用者ID 指令 [指令...]"),
     "perms": ("查看某個使用者目前被授權的指令。", "&perms 使用者ID"),
+    "clear-pvp-cooldown": (
+        "清除一個或多個使用者的 PvP 一般／強制冷卻。",
+        "&clear-pvp-cooldown 使用者ID [使用者ID...]（全部：all）",
+    ),
 }
 
 
@@ -146,7 +150,7 @@ def _parse_prefix(content: str) -> tuple[str, str, bool, bool] | None:
 
 def _help_text(store: Any, user_id: str, is_owner: bool) -> str:
     if is_owner:
-        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "ban-bet", "start-bet", "stop-bet", "resolve-bet", "log", "id", "response", "sql", "grant", "revoke", "perms"]
+        commands = ["help", "say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "ban-bet", "start-bet", "stop-bet", "resolve-bet", "log", "id", "response", "sql", "grant", "revoke", "perms", "clear-pvp-cooldown"]
     else:
         commands = ["help"] + [
             command for command in ("say", "button", "react", "snipe", "delete", "give", "give_role", "create-bet", "ban-bet", "start-bet", "stop-bet", "resolve-bet", "log", "id", "response")
@@ -181,11 +185,11 @@ def _has_permission(store: Any, user_id: str, command: str) -> bool:
         return store.has_prefix_command(user_id, "log") or store.has_prefix_command(
             user_id, "money-log"
         )
-        if command == "ban-bet":
-            return store.has_prefix_command(user_id, "ban-bet") or store.has_prefix_command(
-                user_id, "prohibit"
-            )
-        return store.has_prefix_command(user_id, command)
+    if command == "ban-bet":
+        return store.has_prefix_command(user_id, "ban-bet") or store.has_prefix_command(
+            user_id, "prohibit"
+        )
+    return store.has_prefix_command(user_id, command)
 
 
 def _parse_give_arguments(
@@ -993,6 +997,45 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
 
         if command in {"grant", "revoke", "perms"}:
             await _handle_permission_command(message, store, command, arguments)
+            return True
+
+        if command == "clear-pvp-cooldown":
+            values = [value for value in re.split(r"[,\s]+", arguments.strip()) if value]
+            if not values:
+                await message.channel.send(
+                    "用法：&clear-pvp-cooldown 使用者ID [使用者ID...]（全部：all）",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            if len(values) == 1 and values[0].casefold() == "all":
+                cleared = await _run_in_thread(store.clear_pvp_cooldowns)
+                await message.channel.send(
+                    f"已清除所有 PvP 使用者的冷卻（共 **{cleared}** 個設定檔）。",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
+            target_ids: list[str] = []
+            for value in values:
+                mention_match = USER_MENTION_PATTERN.fullmatch(value)
+                target_id = mention_match.group(1) if mention_match else value
+                if not ID_PATTERN.fullmatch(target_id):
+                    await message.channel.send(
+                        "使用者必須填寫 ID 或 @使用者；全部清除請使用 `all`。",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    return True
+                target_ids.append(target_id)
+
+            cleared = await _run_in_thread(
+                store.clear_pvp_cooldowns,
+                list(dict.fromkeys(target_ids)),
+            )
+            await message.channel.send(
+                f"已清除指定使用者的 PvP 冷卻（共 **{cleared}** 個設定檔）。",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return True
     except discord.Forbidden:
         # A command can be read in a channel where the bot cannot send. Do not

@@ -46,6 +46,22 @@ def _remaining_text(until_ms: int, now_ms: int | None = None) -> str:
     return f"{seconds} 秒"
 
 
+def _toggle_error_text(result: dict[str, Any]) -> str:
+    error = result.get("error")
+    if error == "already_enabled":
+        return "PvP 已經是開啟狀態。"
+    if error == "already_disabled":
+        return "PvP 已經是關閉狀態。"
+    if error == "insufficient_funds":
+        return f"開啟 PvP 至少需要 {_number(result.get('required', 10000))} 芙帽幣。"
+    if error in {"toggle_cooldown", "forced_cooldown"}:
+        cooldown_type = "一般切換" if error == "toggle_cooldown" else "強制"
+        remaining_ms = int(result.get("remaining_ms", 0))
+        remaining = _remaining_text(int(time.time() * 1000) + remaining_ms)
+        return f"PvP 正在冷卻中（{cooldown_type}冷卻），請等待 **{remaining}** 後再開啟。"
+    return "目前無法變更 PvP 狀態。"
+
+
 def _error_embed(message: str) -> discord.Embed:
     return discord.Embed(title="⚠️ PvP", description=message, color=0xD9534F)
 
@@ -207,14 +223,7 @@ class PvpStatusView(discord.ui.View):
             profile = await asyncio.to_thread(self.pvp.profile, self.user_id)
             attack_logs = await asyncio.to_thread(self.pvp.recent_attack_logs, self.user_id)
             if result.get("error"):
-                messages = {
-                    "already_enabled": "PvP 已經是開啟狀態。",
-                    "already_disabled": "PvP 已經是關閉狀態。",
-                    "insufficient_funds": f"開啟 PvP 至少需要 {_number(result.get('required', 10000))} 芙帽幣。",
-                    "toggle_cooldown": "PvP 一般切換仍在冷卻中。",
-                    "forced_cooldown": "PvP 強制冷卻仍在冷卻中。",
-                }
-                profile["status_message"] = messages.get(result["error"], "目前無法變更 PvP 狀態。")
+                profile["status_message"] = _toggle_error_text(result)
             embed = _profile_embed(profile, attack_logs=attack_logs)
             if profile.get("status_message"):
                 embed.description = (embed.description or "") + f"\n\n⚠️ {profile['status_message']}"
@@ -898,14 +907,7 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
             )
             error = result.get("error")
             if error:
-                messages = {
-                    "already_enabled": "PvP 已經是開啟狀態。",
-                    "already_disabled": "PvP 已經是關閉狀態。",
-                    "insufficient_funds": f"開啟 PvP 至少需要 {_number(result.get('required', 10000))} 芙帽幣。",
-                    "toggle_cooldown": "PvP 一般切換仍在冷卻中。",
-                    "forced_cooldown": "PvP 強制冷卻仍在冷卻中。",
-                }
-                status_message = messages.get(error, "目前無法變更 PvP 狀態。")
+                status_message = _toggle_error_text(result)
         profile = await asyncio.to_thread(store.profile, str(interaction.user.id))
         attack_logs = await asyncio.to_thread(store.recent_attack_logs, str(interaction.user.id))
         if status_message:
