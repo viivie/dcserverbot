@@ -263,7 +263,16 @@ class PvpStore:
                 SELECT id, user_id, color, set_id, slot, level, main_stat,
                        main_value, sub_stats, original_value, upgrade_cost,
                        equipped, created_at FROM pvp_artifacts
-                WHERE user_id = ? ORDER BY level DESC, equipped DESC, id
+                WHERE user_id = ?
+                ORDER BY level DESC,
+                         CASE color
+                             WHEN 'yellow' THEN 4
+                             WHEN 'purple' THEN 3
+                             WHEN 'blue' THEN 2
+                             WHEN 'green' THEN 1
+                             ELSE 0
+                         END DESC,
+                         equipped DESC, id
                 """, (str(user_id),),
             ).fetchall()
             return [self._artifact(row) for row in rows]
