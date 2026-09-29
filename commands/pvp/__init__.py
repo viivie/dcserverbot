@@ -1281,39 +1281,93 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
                 defender_profile,
                 defender_artifacts,
             )
-            prize_pool = max(int(defender_profile["fumao_coins"]), int(defender_profile["baseline_coins"])) * float(pvp_rules()["prize_pool_rate"])
-            theft = max(1, int(prize_pool * float(damage["r"])))
-            result = await asyncio.to_thread(
-                store.resolve_attack, attacker_id, defender_id, theft, int(time.time() * 1000),
-                {
-                    "damage": damage["damage"],
-                    "r": damage["r"],
-                    "critical": damage["critical"],
-                    "attack_count": damage["attack_count"],
-                    "k_atk_values": damage["k_atk_values"],
-                    "k_def_values": damage["k_def_values"],
-                    "hits": damage["hits"],
-                },
-            )
+            now_ms = int(time.time() * 1000)
+            counterattack = float(damage["r"]) < 0.05
+            counter_damage: dict[str, Any] = {}
+            if counterattack:
+                counter_damage = calculate_damage(
+                    defender_profile,
+                    defender_artifacts,
+                    attacker_profile,
+                    attacker_artifacts,
+                )
+                counter_pool = max(
+                    int(attacker_profile["fumao_coins"]),
+                    int(attacker_profile["baseline_coins"]),
+                ) * float(pvp_rules()["prize_pool_rate"])
+                counter_theft = max(1, int(counter_pool * float(counter_damage["r"])))
+                result = await asyncio.to_thread(
+                    store.resolve_attack,
+                    defender_id,
+                    attacker_id,
+                    counter_theft,
+                    now_ms,
+                    {
+                        "counterattack": True,
+                        "original_damage": damage["damage"],
+                        "original_r": damage["r"],
+                        "damage": counter_damage["damage"],
+                        "r": counter_damage["r"],
+                        "critical": counter_damage["critical"],
+                        "attack_count": counter_damage["attack_count"],
+                        "k_atk_values": counter_damage["k_atk_values"],
+                        "k_def_values": counter_damage["k_def_values"],
+                        "hits": counter_damage["hits"],
+                    },
+                )
+            else:
+                prize_pool = max(
+                    int(defender_profile["fumao_coins"]),
+                    int(defender_profile["baseline_coins"]),
+                ) * float(pvp_rules()["prize_pool_rate"])
+                theft = max(1, int(prize_pool * float(damage["r"])))
+                result = await asyncio.to_thread(
+                    store.resolve_attack,
+                    attacker_id,
+                    defender_id,
+                    theft,
+                    now_ms,
+                    {
+                        "damage": damage["damage"],
+                        "r": damage["r"],
+                        "critical": damage["critical"],
+                        "attack_count": damage["attack_count"],
+                        "k_atk_values": damage["k_atk_values"],
+                        "k_def_values": damage["k_def_values"],
+                        "hits": damage["hits"],
+                    },
+                )
         except ValueError as error:
             try:
                 await interaction.edit_original_response(view=v2_view_from_embed(_error_embed(str(error))))
             except discord.NotFound:
                 pass
             return
-        critical_line = "💥 暴擊！\n" if damage["critical"] else ""
-        embed = discord.Embed(
-            title="⚔️ PvP 攻擊結果",
-            description=(
+        if counterattack:
+            critical_line = "💥 反噬攻擊暴擊！\n" if counter_damage.get("critical") else ""
+            description = (
+                f"{interaction.user.mention} 攻擊了 {target.mention}\n"
+                f"原攻擊傷害：**{damage['damage']:.2f}**（r = **{damage['r']:.4f}**）\n\n"
+                "⚠️ 傷害低於 5%，攻擊失敗並觸發反噬！\n"
+                f"{target.mention} 反向造成傷害：**{counter_damage['damage']:.2f}**（r = **{counter_damage['r']:.4f}**）\n"
+                f"反向偷取：**{_number(result['amount'])}** 芙帽幣\n"
+                f"你的損失：**{_number(result['defender_loss'])}**\n"
+                f"你的剩餘：**{_number(result['defender_balance'])}**\n"
+                + critical_line
+            )
+            title = "💥 PvP 反噬結果"
+        else:
+            critical_line = "💥 暴擊！\n" if damage["critical"] else ""
+            description = (
                 f"{interaction.user.mention} 攻擊了 {target.mention}\n"
                 f"造成傷害：**{damage['damage']:.2f}**（{damage['attack_count']} 次，r = **{damage['r']:.4f}**）\n"
                 + critical_line
                 + f"獲得芙帽幣：**{_number(result['amount'])}**\n"
                 + f"對方損失：**{_number(result['defender_loss'])}**\n"
                 f"對方剩餘：**{_number(result['defender_balance'])}**"
-            ),
-            color=0xC0392B,
-        )
+            )
+            title = "⚔️ PvP 攻擊結果"
+        embed = discord.Embed(title=title, description=description, color=0xC0392B)
         if result["closed"]:
             embed.set_footer(text="防守方已達到損失上限，PvP 已強制關閉。")
         try:
