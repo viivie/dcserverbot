@@ -98,7 +98,9 @@ def generate_artifact(color: str, set_id: str = "", slot: str | None = None) -> 
     slots = ARTIFACT_CONFIG.get("slots", ["生之花", "死之羽", "時之沙", "空之杯", "理之冠"])
     main_stats = ARTIFACT_CONFIG.get("main_stats", {})
     main_stat = random.choice(list(main_stats))
-    main_value = float(main_stats[main_stat].get(color, 0))
+    max_level = int(color_data.get("max_level", 1))
+    max_main_value = float(main_stats[main_stat].get(color, 0))
+    main_value = round(max_main_value / max_level, 4)
     sub_count = {"green": 2, "blue": 3, "purple": 4, "yellow": 4}.get(color, 2)
     pool = [key for key in ARTIFACT_CONFIG.get("sub_stats", {}) if key != main_stat]
     random.shuffle(pool)

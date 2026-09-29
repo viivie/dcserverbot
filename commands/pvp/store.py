@@ -10,6 +10,8 @@ import sqlite3
 import time
 from typing import Any
 
+from .config import ARTIFACT_CONFIG, artifact_color
+
 
 class PvpStore:
     def __init__(self, base_store: Any) -> None:
@@ -72,6 +74,31 @@ class PvpStore:
                     ON pvp_logs(actor_id, created_at DESC);
                 """
             )
+            self._migrate_legacy_main_values(connection)
+
+    @staticmethod
+    def _migrate_legacy_main_values(connection: sqlite3.Connection) -> None:
+        """Normalize artifacts created before main stats gained per-level growth."""
+        rows = connection.execute(
+            "SELECT id, color, main_stat, main_value, level FROM pvp_artifacts"
+        ).fetchall()
+        main_stats = ARTIFACT_CONFIG.get("main_stats", {})
+        for artifact_id, color, main_stat, current_value, level in rows:
+            color_data = artifact_color(str(color))
+            max_level = int(color_data.get("max_level", 1))
+            max_value = float(main_stats.get(str(main_stat), {}).get(str(color), 0))
+            if max_level < 1 or max_value <= 0:
+                continue
+            expected = round(
+                max_value * min(int(level) + 1, max_level) / max_level,
+                4,
+            )
+            # Old records stored the max-level value even at Lv.0 or lower levels.
+            if float(current_value) >= max_value * 0.999 and expected < max_value * 0.999:
+                connection.execute(
+                    "UPDATE pvp_artifacts SET main_value = ? WHERE id = ?",
+                    (expected, int(artifact_id)),
+                )
 
     @staticmethod
     def _profile(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -236,7 +263,7 @@ class PvpStore:
                 SELECT id, user_id, color, set_id, slot, level, main_stat,
                        main_value, sub_stats, original_value, upgrade_cost,
                        equipped, created_at FROM pvp_artifacts
-                WHERE user_id = ? ORDER BY equipped DESC, slot, id
+                WHERE user_id = ? ORDER BY level DESC, equipped DESC, id
                 """, (str(user_id),),
             ).fetchall()
             return [self._artifact(row) for row in rows]
@@ -286,7 +313,8 @@ class PvpStore:
 
     def upgrade_artifact(
         self, user_id: str, artifact_id: int, max_level: int,
-        cost: int, roll_stat: str | None, roll_amount: float, now_ms: int,
+        cost: int, roll_stat: str | None, roll_amount: float,
+        main_value: float, now_ms: int,
     ) -> dict[str, Any]:
         with self.base.lock, self._connect() as connection:
             row = connection.execute(
@@ -308,14 +336,20 @@ class PvpStore:
             sub_stats = dict(artifact["sub_stats"])
             if roll_stat:
                 sub_stats[roll_stat] = round(float(sub_stats.get(roll_stat, 0)) + float(roll_amount), 4)
+                upgrade_counts = sub_stats.setdefault("__upgrade_counts__", {})
+                if isinstance(upgrade_counts, dict):
+                    upgrade_counts[roll_stat] = int(upgrade_counts.get(roll_stat, 0)) + 1
             new_level = artifact["level"] + 1
             connection.execute(
                 """
                 UPDATE pvp_artifacts
-                SET level = ?, sub_stats = ?, upgrade_cost = upgrade_cost + ?
+                SET level = ?, main_value = ?, sub_stats = ?, upgrade_cost = upgrade_cost + ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (new_level, json.dumps(sub_stats, ensure_ascii=False), int(cost), int(artifact_id), str(user_id)),
+                (
+                    new_level, float(main_value), json.dumps(sub_stats, ensure_ascii=False),
+                    int(cost), int(artifact_id), str(user_id),
+                ),
             )
             connection.execute(
                 "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
@@ -332,6 +366,33 @@ class PvpStore:
                 """, (int(artifact_id),),
             ).fetchone()
             return self._artifact(updated)
+
+    def charge_domain_entry(
+        self,
+        user_id: str,
+        required_level: int,
+        now_ms: int,
+        base_cost_per_level: int = 1000,
+        balance_rate: float = 0.01,
+    ) -> dict[str, Any]:
+        """Charge a domain entry fee based on its unlock level and current balance."""
+        with self.base.lock, self._connect() as connection:
+            account = self._account(connection, str(user_id))
+            balance = int(account["fumao_coins"])
+            cost = int(round(int(base_cost_per_level) * int(required_level) + balance * float(balance_rate)))
+            if balance < cost:
+                raise ValueError(
+                    f"芙帽幣不足，進入此副本需要 {cost:,} 芙帽幣。"
+                )
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
+                (cost, str(user_id)),
+            )
+            self.base._record_economy_currency_change(
+                connection, str(user_id), "fumao_coins", -cost,
+                f"PvP 秘境入場 Lv.{int(required_level)}", int(now_ms),
+            )
+            return {"cost": cost, "balance": balance - cost}
 
     def salvage_artifact(self, user_id: str, artifact_id: int, now_ms: int) -> int:
         with self.base.lock, self._connect() as connection:

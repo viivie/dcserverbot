@@ -120,6 +120,26 @@ ARTIFACT_STAT_LABELS = {
     "crit_rate": "暴擊率",
     "crit_damage": "暴擊傷害",
 }
+UPGRADE_DIGITS = ("0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣")
+
+
+def _artifact_color_symbol(color: str) -> str:
+    return str(artifact_color(color).get("label", "🟢")).split(maxsplit=1)[0]
+
+
+def _artifact_set_name(set_id: str) -> str:
+    if not set_id:
+        return "無套裝"
+    return str(ARTIFACT_CONFIG.get("sets", {}).get(set_id, {}).get("name", set_id))
+
+
+def _upgrade_count_marker(count: int) -> str:
+    count = max(0, int(count))
+    if count == 0:
+        return ""
+    if count < len(UPGRADE_DIGITS):
+        return f" {UPGRADE_DIGITS[count]}"
+    return f" ×{count}"
 
 
 def _artifact_stat_text(stat: str, value: float) -> str:
@@ -141,10 +161,11 @@ def _artifact_list_embed(
     else:
         lines.extend(
             (
-                f"{'✅' if item['equipped'] else '　'} `#{item['id']}` "
-                f"{artifact_color(item['color'])['label']} {item['slot']} Lv.{item['level']}\n"
+                f"{item['id']} {_artifact_color_symbol(item['color'])}(Lv.{item['level']}) "
+                f"{_artifact_set_name(str(item.get('set_id', '')))} {item['slot']}"
+                f"{' ✅' if item['equipped'] else ''}\n"
                 f"　{_artifact_stat_text(item['main_stat'], float(item['main_value']))}　"
-                f"副詞條 {len(item.get('sub_stats', {}))} 條"
+                f"副詞條 {sum(1 for stat in item.get('sub_stats', {}) if not str(stat).startswith('__'))} 條"
             )
             for item in page_items
         )
@@ -164,14 +185,24 @@ def _artifact_detail_embed(
 ) -> discord.Embed:
     color = artifact_color(str(artifact["color"]))
     lines = [
-        f"{color['label']}　**{artifact['slot']}**　Lv.{artifact['level']} / {color['max_level']}",
-        f"套裝：**{artifact.get('set_id') or '無套裝'}**",
+        f"{color['label']}　{artifact['slot']}　Lv.{artifact['level']} / {color['max_level']}",
+        f"套裝：{_artifact_set_name(str(artifact.get('set_id', '')))}",
         "",
         f"主詞條\n> {_artifact_stat_text(artifact['main_stat'], float(artifact['main_value']))}",
         "副詞條",
     ]
-    if artifact.get("sub_stats"):
-        lines.extend(f"> {_artifact_stat_text(stat, float(value))}" for stat, value in artifact["sub_stats"].items())
+    visible_sub_stats = {
+        stat: value
+        for stat, value in artifact.get("sub_stats", {}).items()
+        if not str(stat).startswith("__")
+    }
+    if visible_sub_stats:
+        upgrade_counts = artifact["sub_stats"].get("__upgrade_counts__", {})
+        lines.extend(
+            f"> {_artifact_stat_text(stat, float(value))}"
+            f"{_upgrade_count_marker(upgrade_counts.get(stat, 0) if isinstance(upgrade_counts, dict) else 0)}"
+            for stat, value in visible_sub_stats.items()
+        )
     else:
         lines.append("> 無副詞條")
     costs = PVP_CONFIG["artifact_upgrade_costs"].get(str(artifact["color"]), [])
@@ -183,7 +214,7 @@ def _artifact_detail_embed(
     if upgrade_note:
         lines.extend(["", upgrade_note])
     embed = discord.Embed(title=title, description="\n".join(lines), color=COLOR)
-    embed.set_footer(text=f"聖遺物 ID：{artifact['id']}｜升級時會套用目前顯示的預覽")
+    embed.set_footer(text=f"聖遺物 ID：{artifact['id']}")
     return embed
 
 
@@ -198,7 +229,7 @@ class ArtifactListView(discord.ui.View):
         for artifact in page_items:
             artifact_id = int(artifact["id"])
             button = discord.ui.Button(
-                label=f"#{artifact_id} {artifact['slot']} Lv.{artifact['level']}",
+                label=f"{artifact_id} {_artifact_color_symbol(artifact['color'])}(Lv.{artifact['level']}) {artifact['slot']}",
                 style=discord.ButtonStyle.success if artifact["equipped"] else discord.ButtonStyle.secondary,
                 custom_id=f"pvp-artifact-select-{artifact_id}",
             )
@@ -333,6 +364,16 @@ class ArtifactDetailView(discord.ui.View):
         color = str(self.artifact["color"])
         level = int(self.artifact["level"])
         costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
+        max_level = int(artifact_color(color)["max_level"])
+        max_main_value = float(
+            ARTIFACT_CONFIG.get("main_stats", {})
+            .get(str(self.artifact["main_stat"]), {})
+            .get(color, self.artifact["main_value"])
+        )
+        new_main_value = min(
+            max_main_value,
+            float(self.artifact["main_value"]) + max_main_value / max_level,
+        )
         roll_stat = None
         roll_amount = 0.0
         if level + 1 in (4, 8, 12, 16, 20):
@@ -344,8 +385,9 @@ class ArtifactDetailView(discord.ui.View):
         try:
             await asyncio.to_thread(
                 self.pvp.upgrade_artifact,
-                self.user_id, int(self.artifact["id"]), int(artifact_color(color)["max_level"]),
-                int(costs[level]), roll_stat, roll_amount, int(time.time() * 1000),
+                self.user_id, int(self.artifact["id"]), max_level,
+                int(costs[level]), roll_stat, roll_amount, new_main_value,
+                int(time.time() * 1000),
             )
             if roll_stat:
                 upgrade_note = f"✅ 本次升級增加：**{_artifact_stat_text(roll_stat, roll_amount)}**"
@@ -410,6 +452,17 @@ class DomainView(discord.ui.View):
                 await interaction.response.send_message("這不是你的秘境介面。", ephemeral=True)
                 return
             await interaction.response.defer()
+            try:
+                entry = await asyncio.to_thread(
+                    self.pvp.charge_domain_entry,
+                    self.user_id,
+                    difficulty,
+                    int(time.time() * 1000),
+                )
+            except (ValueError, discord.NotFound, discord.HTTPException) as error:
+                if isinstance(error, ValueError):
+                    await interaction.followup.send(str(error), ephemeral=True)
+                return
             created: list[dict[str, Any]] = []
             set_ids = self.domain.get("set_ids", [""]) or [""]
             for color in ("green", "blue", "purple", "yellow"):
@@ -420,9 +473,17 @@ class DomainView(discord.ui.View):
                     created.append(artifact)
             if created:
                 lines = [f"{artifact_color(item['color'])['label']} {item['slot']}（{item['main_stat']}）" for item in created]
-                description = "成功取得：\n" + "\n".join(lines)
+                description = (
+                    f"消耗：**{_number(entry['cost'])}** 芙帽幣\n"
+                    f"剩餘：**{_number(entry['balance'])}** 芙帽幣\n\n"
+                    "成功取得：\n" + "\n".join(lines)
+                )
             else:
-                description = "這次沒有取得聖遺物。"
+                description = (
+                    f"消耗：**{_number(entry['cost'])}** 芙帽幣\n"
+                    f"剩餘：**{_number(entry['balance'])}** 芙帽幣\n\n"
+                    "這次沒有取得聖遺物。"
+                )
             embed = discord.Embed(title=f"🏛️ {self.domain.get('name', '秘境')} Lv.{difficulty}", description=description, color=COLOR)
             await interaction.edit_original_response(view=v2_view_from_embed(embed))
 
@@ -452,7 +513,10 @@ class DomainSelectView(discord.ui.View):
             await interaction.response.defer()
             embed = discord.Embed(
                 title=f"🏛️ {domain.get('name', '秘境')}",
-                description="選擇已解鎖的難度。難度會依照你的等級在 4、8、10、12、15 解鎖。",
+                description=(
+                    "選擇已解鎖的難度。難度會依照你的等級在 4、8、10、12、15 解鎖。\n"
+                    "進場費用：1000 × 副本需求等級 + 目前芙帽幣的 1%"
+                ),
                 color=COLOR,
             )
             await interaction.edit_original_response(
@@ -579,7 +643,10 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
             return
         embed = discord.Embed(
             title=f"🏛️ {domain.get('name', '秘境')}",
-            description="選擇已解鎖的難度。難度會依照你的等級在 4、8、10、12、15 解鎖。",
+            description=(
+                "選擇已解鎖的難度。難度會依照你的等級在 4、8、10、12、15 解鎖。\n"
+                "進場費用：1000 × 副本需求等級 + 目前芙帽幣的 1%"
+            ),
             color=COLOR,
         )
         await interaction.response.send_message(
