@@ -31,11 +31,30 @@ def _percent(value: float) -> str:
     return f"{value * 100:.2f}%"
 
 
+def _remaining_text(until_ms: int, now_ms: int | None = None) -> str:
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    remaining = max(0, int(until_ms) - now)
+    if remaining <= 0:
+        return "無"
+    total_seconds = (remaining + 999) // 1000
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours} 小時 {minutes} 分鐘"
+    if minutes:
+        return f"{minutes} 分鐘 {seconds} 秒"
+    return f"{seconds} 秒"
+
+
 def _error_embed(message: str) -> discord.Embed:
     return discord.Embed(title="⚠️ PvP", description=message, color=0xD9534F)
 
 
-def _profile_embed(profile: dict[str, Any], title: str = "⚔️ PvP 狀態") -> discord.Embed:
+def _profile_embed(
+    profile: dict[str, Any],
+    title: str = "⚔️ PvP 狀態",
+    attack_logs: dict[str, list[dict[str, Any]]] | None = None,
+) -> discord.Embed:
     enabled = "🟢 已開啟" if profile.get("enabled") else "⚪ 未開啟"
     description = [
         f"狀態：**{enabled}**",
@@ -48,7 +67,16 @@ def _profile_embed(profile: dict[str, Any], title: str = "⚔️ PvP 狀態") ->
             f"損失上限：**{_number(profile['loss_cap'])}**",
             f"已損失：**{_number(profile['lost_coins'])}**　剩餘可損失：**{_number(remaining)}**",
         ])
+    now_ms = int(time.time() * 1000)
     embed = discord.Embed(title=title, description="\n".join(description), color=COLOR)
+    embed.add_field(
+        name="切換冷卻",
+        value=(
+            f"一般切換：**{_remaining_text(profile.get('toggle_cooldown_until', 0), now_ms)}**\n"
+            f"強制冷卻：**{_remaining_text(profile.get('forced_cooldown_until', 0), now_ms)}**"
+        ),
+        inline=False,
+    )
     embed.add_field(
         name="直接升級屬性",
         value=(
@@ -59,6 +87,27 @@ def _profile_embed(profile: dict[str, Any], title: str = "⚔️ PvP 狀態") ->
         ),
         inline=False,
     )
+    if attack_logs is not None:
+        attacks = attack_logs.get("attacks", [])
+        defended = attack_logs.get("defended", [])
+        attack_lines = [
+            f"<t:{int(item['created_at']) // 1000}:f>　→ <@{item['target_id']}>　+{_number(item['amount'])}"
+            for item in attacks
+        ]
+        defended_lines = [
+            f"<t:{int(item['created_at']) // 1000}:f>　← <@{item['target_id']}>　-{_number(abs(item['amount']))}"
+            for item in defended
+        ]
+        embed.add_field(
+            name="最近偷竊紀錄",
+            value="\n".join(attack_lines) if attack_lines else "沒有偷竊紀錄。",
+            inline=False,
+        )
+        embed.add_field(
+            name="最近被偷紀錄",
+            value="\n".join(defended_lines) if defended_lines else "沒有被偷紀錄。",
+            inline=False,
+        )
     embed.set_footer(text=TAIPEI_LABEL)
     return embed
 
@@ -83,7 +132,11 @@ class UpgradeView(discord.ui.View):
             if str(interaction.user.id) != self.user_id:
                 await interaction.response.send_message("這不是你的 PvP 升級介面。", ephemeral=True)
                 return
-            await interaction.response.defer()
+            try:
+                await interaction.response.defer()
+            except discord.NotFound:
+                # The V2 card can remain visible after its interaction token expires.
+                return
             now = int(time.time() * 1000)
             try:
                 result = await asyncio.to_thread(
@@ -105,6 +158,145 @@ class UpgradeView(discord.ui.View):
                     embed.description += "\n\n⚠️ 這個屬性已達直接升級上限。"
                 await interaction.edit_original_response(view=v2_view_from_embed(embed, legacy_view=self))
             except (discord.NotFound, discord.HTTPException):
+                return
+
+        return callback
+
+
+class PvpStatusView(discord.ui.View):
+    def __init__(self, pvp: PvpStore, user_id: str, *, timeout: float = 300) -> None:
+        super().__init__(timeout=timeout)
+        self.pvp = pvp
+        self.user_id = str(user_id)
+
+        enable = discord.ui.Button(
+            label="開啟 PvP",
+            style=discord.ButtonStyle.success,
+            custom_id="pvp-status-enable",
+        )
+        enable.callback = self._toggle_callback(True)
+        self.add_item(enable)
+
+        disable = discord.ui.Button(
+            label="關閉 PvP",
+            style=discord.ButtonStyle.danger,
+            custom_id="pvp-status-disable",
+        )
+        disable.callback = self._toggle_callback(False)
+        self.add_item(disable)
+
+    def _toggle_callback(self, enabled: bool):
+        async def callback(interaction: discord.Interaction) -> None:
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message("這不是你的 PvP 狀態介面。", ephemeral=True)
+                return
+            try:
+                await interaction.response.defer()
+            except discord.NotFound:
+                return
+            result = await asyncio.to_thread(
+                self.pvp.toggle,
+                self.user_id,
+                enabled,
+                int(time.time() * 1000),
+                int(pvp_rules()["minimum_open_coins"]),
+                int(PVP_CONFIG["cooldowns"]["toggle_hours"] * 60 * 60 * 1000),
+            )
+            profile = await asyncio.to_thread(self.pvp.profile, self.user_id)
+            attack_logs = await asyncio.to_thread(self.pvp.recent_attack_logs, self.user_id)
+            if result.get("error"):
+                messages = {
+                    "already_enabled": "PvP 已經是開啟狀態。",
+                    "already_disabled": "PvP 已經是關閉狀態。",
+                    "insufficient_funds": f"開啟 PvP 至少需要 {_number(result.get('required', 10000))} 芙帽幣。",
+                    "toggle_cooldown": "PvP 一般切換仍在冷卻中。",
+                    "forced_cooldown": "PvP 強制冷卻仍在冷卻中。",
+                }
+                profile["status_message"] = messages.get(result["error"], "目前無法變更 PvP 狀態。")
+            embed = _profile_embed(profile, attack_logs=attack_logs)
+            if profile.get("status_message"):
+                embed.description = (embed.description or "") + f"\n\n⚠️ {profile['status_message']}"
+            try:
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        embed,
+                        legacy_view=PvpStatusView(self.pvp, self.user_id),
+                    )
+                )
+            except discord.NotFound:
+                pass
+
+        return callback
+
+
+def _pvp_roster_embed(
+    profiles: list[dict[str, Any]],
+    member_names: dict[str, str],
+    page: int = 0,
+) -> discord.Embed:
+    page_count = max(1, (len(profiles) + 9) // 10)
+    page = max(0, min(int(page), page_count - 1))
+    page_items = profiles[page * 10:(page + 1) * 10]
+    lines = [f"目前共有 **{len(profiles)}** 人已開啟 PvP。", ""]
+    if not page_items:
+        lines.append("目前沒有成員開啟 PvP。")
+    else:
+        now_ms = int(time.time() * 1000)
+        for index, profile in enumerate(page_items, page * 10 + 1):
+            user_id = str(profile["user_id"])
+            name = member_names.get(user_id, user_id)
+            remaining = max(0, int(profile["loss_cap"]) - int(profile["lost_coins"]))
+            lines.extend([
+                f"**{index}.** <@{user_id}>（{name}）",
+                f"芙帽幣：**{_number(profile['fumao_coins'])}**　基準：**{_number(profile['baseline_coins'])}**",
+                f"剩餘可損失：**{_number(remaining)}**　切換冷卻：**{_remaining_text(profile.get('toggle_cooldown_until', 0), now_ms)}**",
+            ])
+            if index != page * 10 + len(page_items):
+                lines.append("")
+    embed = discord.Embed(title="⚔️ 本伺服器 PvP 名單", description="\n".join(lines), color=COLOR)
+    embed.set_footer(text=f"第 {page + 1} / {page_count} 頁")
+    return embed
+
+
+class PvpRosterView(discord.ui.View):
+    def __init__(
+        self,
+        profiles: list[dict[str, Any]],
+        member_names: dict[str, str],
+        user_id: str,
+        page: int = 0,
+        *,
+        timeout: float = 300,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.profiles = profiles
+        self.member_names = member_names
+        self.user_id = str(user_id)
+        self.page = max(0, int(page))
+        page_count = max(1, (len(profiles) + 9) // 10)
+        if self.page > 0:
+            previous = discord.ui.Button(label="上一頁", style=discord.ButtonStyle.primary, custom_id="pvp-roster-prev")
+            previous.callback = self._page_callback(self.page - 1)
+            self.add_item(previous)
+        if self.page + 1 < page_count:
+            following = discord.ui.Button(label="下一頁", style=discord.ButtonStyle.primary, custom_id="pvp-roster-next")
+            following.callback = self._page_callback(self.page + 1)
+            self.add_item(following)
+
+    def _page_callback(self, page: int):
+        async def callback(interaction: discord.Interaction) -> None:
+            if str(interaction.user.id) != self.user_id:
+                await interaction.response.send_message("這不是你的 PvP 名單介面。", ephemeral=True)
+                return
+            try:
+                await interaction.response.defer()
+                await interaction.edit_original_response(
+                    view=v2_view_from_embed(
+                        _pvp_roster_embed(self.profiles, self.member_names, page),
+                        legacy_view=PvpRosterView(self.profiles, self.member_names, self.user_id, page),
+                    )
+                )
+            except discord.NotFound:
                 return
 
         return callback
@@ -295,6 +487,88 @@ class ArtifactListView(discord.ui.View):
         return callback
 
 
+class ArtifactBatchUpgradeModal(discord.ui.Modal, title="批量升級聖遺物"):
+    count_input = discord.ui.TextInput(
+        label="升級次數",
+        placeholder="例如：5",
+        required=True,
+        max_length=3,
+    )
+
+    def __init__(self, detail_view: "ArtifactDetailView") -> None:
+        super().__init__()
+        self.detail_view = detail_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.detail_view.user_id:
+            await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
+            return
+        try:
+            count = int(str(self.count_input.value).strip())
+        except ValueError:
+            await interaction.response.send_message("升級次數必須是正整數。", ephemeral=True)
+            return
+        if count < 1:
+            await interaction.response.send_message("升級次數必須至少為 1。", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
+
+        artifacts = await asyncio.to_thread(self.detail_view.pvp.artifacts, self.detail_view.user_id)
+        artifact = next(
+            (item for item in artifacts if int(item["id"]) == int(self.detail_view.artifact["id"])),
+            None,
+        )
+        if artifact is None:
+            await interaction.followup.send("找不到這件聖遺物，請重新開啟列表。", ephemeral=True)
+            return
+        try:
+            upgrades = self.detail_view.build_upgrade_plan(artifact, count)
+            result = await asyncio.to_thread(
+                self.detail_view.pvp.upgrade_artifact_batch,
+                self.detail_view.user_id,
+                int(artifact["id"]),
+                int(artifact_color(str(artifact["color"]))["max_level"]),
+                upgrades,
+                int(time.time() * 1000),
+            )
+        except (IndexError, ValueError) as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
+
+        events = result.get("upgrade_events", [])
+        note_lines = [
+            f"✅ 批量升級 **{result['upgrade_count']}** 次，消耗 **{_number(result['total_cost'])}** 芙帽幣"
+        ]
+        if events:
+            note_lines.append("升級增加：")
+            note_lines.extend(
+                f"Lv.{event['level']}　{_artifact_stat_text(event['stat'], float(event['amount']))}"
+                for event in events
+            )
+        else:
+            note_lines.append("本次沒有增加副詞條")
+        updated_artifacts = await asyncio.to_thread(self.detail_view.pvp.artifacts, self.detail_view.user_id)
+        updated = next(item for item in updated_artifacts if int(item["id"]) == int(artifact["id"]))
+        detail = ArtifactDetailView(self.detail_view.pvp, self.detail_view.user_id, updated, self.detail_view.page)
+        if interaction.message is not None:
+            try:
+                await interaction.message.edit(
+                    view=v2_view_from_embed(
+                        _artifact_detail_embed(
+                            updated,
+                            "\n".join(note_lines),
+                            "🧿 聖遺物批量升級完成",
+                        ),
+                        legacy_view=detail,
+                    )
+                )
+            except discord.HTTPException:
+                pass
+
+
 class ArtifactDetailView(discord.ui.View):
     def __init__(self, pvp: PvpStore, user_id: str, artifact: dict[str, Any], page: int, *, timeout: float = 300) -> None:
         super().__init__(timeout=timeout)
@@ -322,6 +596,14 @@ class ArtifactDetailView(discord.ui.View):
         )
         upgrade.callback = self._upgrade_callback
         self.add_item(upgrade)
+        batch = discord.ui.Button(
+            label="批量升級",
+            style=discord.ButtonStyle.primary,
+            disabled=level >= len(costs),
+            custom_id=f"pvp-artifact-batch-{artifact['id']}",
+        )
+        batch.callback = self._batch_upgrade_callback
+        self.add_item(batch)
         salvage = discord.ui.Button(label="分解", style=discord.ButtonStyle.danger, custom_id=f"pvp-artifact-salvage-{artifact['id']}")
         salvage.callback = self._salvage_callback
         self.add_item(salvage)
@@ -410,6 +692,53 @@ class ArtifactDetailView(discord.ui.View):
         except (IndexError, ValueError, discord.NotFound, discord.HTTPException) as error:
             if isinstance(error, (IndexError, ValueError)):
                 await interaction.followup.send(str(error), ephemeral=True)
+
+    def build_upgrade_plan(
+        self,
+        artifact: dict[str, Any],
+        count: int,
+    ) -> list[tuple[int, str | None, float, float]]:
+        color = str(artifact["color"])
+        level = int(artifact["level"])
+        max_level = int(artifact_color(color)["max_level"])
+        costs = PVP_CONFIG["artifact_upgrade_costs"].get(color, [])
+        if count > max_level - level:
+            raise ValueError(f"最多只能再升級 {max_level - level} 次。")
+        max_main_value = float(
+            ARTIFACT_CONFIG.get("main_stats", {})
+            .get(str(artifact["main_stat"]), {})
+            .get(color, artifact["main_value"])
+        )
+        current_main_value = float(artifact["main_value"])
+        candidates = [
+            stat for stat in artifact.get("sub_stats", {})
+            if not str(stat).startswith("__")
+        ]
+        plan: list[tuple[int, str | None, float, float]] = []
+        from .engine import _sub_value
+        for _ in range(count):
+            next_level = level + 1
+            current_main_value = min(
+                max_main_value,
+                current_main_value + max_main_value / max_level,
+            )
+            roll_stat = None
+            roll_amount = 0.0
+            if next_level in (4, 8, 12, 16, 20) and candidates:
+                roll_stat = random.choice(candidates)
+                roll_amount = _sub_value(roll_stat, color)
+            plan.append((int(costs[level]), roll_stat, roll_amount, current_main_value))
+            level = next_level
+        return plan
+
+    async def _batch_upgrade_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("這不是你的聖遺物介面。", ephemeral=True)
+            return
+        try:
+            await interaction.response.send_modal(ArtifactBatchUpgradeModal(self))
+        except discord.NotFound:
+            return
 
     async def _salvage_callback(self, interaction: discord.Interaction) -> None:
         if str(interaction.user.id) != self.user_id:
@@ -548,27 +877,62 @@ def register_pvp(tree: Any, discord_module: Any, app_commands: Any, context: Com
 
     @pvp.command(name="狀態", description="開啟或關閉 PvP")
     @app_commands.guild_only()
-    @app_commands.describe(enabled="是否開啟 PvP")
-    async def pvp_status(interaction: Any, enabled: bool) -> None:
-        result = await asyncio.to_thread(
-            store.toggle,
-            str(interaction.user.id), bool(enabled), int(time.time() * 1000),
-            int(pvp_rules()["minimum_open_coins"]),
-            int(PVP_CONFIG["cooldowns"]["toggle_hours"] * 60 * 60 * 1000),
-        )
-        error = result.get("error")
-        if error:
-            messages = {
-                "already_enabled": "PvP 已經是開啟狀態。",
-                "already_disabled": "PvP 已經是關閉狀態。",
-                "insufficient_funds": f"開啟 PvP 至少需要 {_number(result.get('required', 10000))} 芙帽幣。",
-                "toggle_cooldown": f"開關冷卻中，還要等待 {_number(result.get('remaining_ms', 0) / 1000)} 秒。",
-                "forced_cooldown": f"PvP 強制冷卻中，還要等待 {_number(result.get('remaining_ms', 0) / 1000)} 秒。",
-            }
-            await interaction.response.send_message(view=v2_view_from_embed(_error_embed(messages.get(error, "目前無法變更 PvP 狀態。"))), ephemeral=True)
-            return
+    @app_commands.describe(enabled="可選：直接指定開啟或關閉；省略則顯示狀態卡片")
+    async def pvp_status(interaction: Any, enabled: bool | None = None) -> None:
+        status_message = None
+        if enabled is not None:
+            result = await asyncio.to_thread(
+                store.toggle,
+                str(interaction.user.id), bool(enabled), int(time.time() * 1000),
+                int(pvp_rules()["minimum_open_coins"]),
+                int(PVP_CONFIG["cooldowns"]["toggle_hours"] * 60 * 60 * 1000),
+            )
+            error = result.get("error")
+            if error:
+                messages = {
+                    "already_enabled": "PvP 已經是開啟狀態。",
+                    "already_disabled": "PvP 已經是關閉狀態。",
+                    "insufficient_funds": f"開啟 PvP 至少需要 {_number(result.get('required', 10000))} 芙帽幣。",
+                    "toggle_cooldown": "PvP 一般切換仍在冷卻中。",
+                    "forced_cooldown": "PvP 強制冷卻仍在冷卻中。",
+                }
+                status_message = messages.get(error, "目前無法變更 PvP 狀態。")
         profile = await asyncio.to_thread(store.profile, str(interaction.user.id))
-        await interaction.response.send_message(view=v2_view_from_embed(_profile_embed(profile)), ephemeral=True)
+        attack_logs = await asyncio.to_thread(store.recent_attack_logs, str(interaction.user.id))
+        if status_message:
+            profile["status_message"] = status_message
+        embed = _profile_embed(profile, attack_logs=attack_logs)
+        if status_message:
+            embed.description = (embed.description or "") + f"\n\n⚠️ {status_message}"
+        await interaction.response.send_message(
+            view=v2_view_from_embed(
+                embed,
+                legacy_view=PvpStatusView(store, str(interaction.user.id)),
+            ),
+            ephemeral=True,
+        )
+
+    @pvp.command(name="列表", description="查看目前伺服器已開啟 PvP 的成員")
+    @app_commands.guild_only()
+    async def pvp_roster(interaction: Any) -> None:
+        guild = interaction.guild
+        member_names = {
+            str(member.id): str(member.display_name)
+            for member in guild.members
+            if not member.bot
+        }
+        profiles = await asyncio.to_thread(
+            store.enabled_profiles,
+            set(member_names),
+            int(time.time() * 1000),
+        )
+        await interaction.response.send_message(
+            view=v2_view_from_embed(
+                _pvp_roster_embed(profiles, member_names),
+                legacy_view=PvpRosterView(profiles, member_names, str(interaction.user.id)),
+            ),
+            ephemeral=True,
+        )
 
     @pvp.command(name="攻擊", description="攻擊一名已開啟 PvP 的玩家")
     @app_commands.guild_only()

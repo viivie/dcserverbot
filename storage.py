@@ -1191,6 +1191,61 @@ class WorshipStore:
             account["changed"] = actual
             return account
 
+    def transfer_fumao_coins(
+        self,
+        sender_id: str,
+        recipient_id: str,
+        amount: int,
+        fee_rate: float = 0.05,
+    ) -> dict[str, Any]:
+        """Transfer FumaoCoin atomically; the fee is taken from the transfer amount."""
+        amount = int(amount)
+        if amount < 1:
+            raise ValueError("轉帳金額必須大於 0")
+        fee = int(amount * float(fee_rate))
+        received = amount - fee
+        if received < 1:
+            raise ValueError("轉帳金額扣除手續費後必須至少剩下 1 芙帽幣")
+        total = amount
+
+        with self.lock, self._connect() as connection:
+            now_ms = int(time.time() * 1000)
+            self._purge_economy_currency_logs(connection, now_ms)
+            if str(sender_id) == str(recipient_id):
+                raise ValueError("不能轉帳給自己")
+            sender = self._select_economy_account(connection, str(sender_id))
+            if int(sender["fumao_coins"]) < total:
+                raise ValueError(
+                    f"芙帽幣不足，需要 {total:,} 芙帽幣（含 {fee:,} 手續費）。"
+                )
+            self._select_economy_account(connection, str(recipient_id))
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
+                (total, str(sender_id)),
+            )
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins + ? WHERE user_id = ?",
+                (received, str(recipient_id)),
+            )
+            self._record_economy_currency_change(
+                connection, str(sender_id), "fumao_coins", -total,
+                f"轉帳給 {recipient_id}（手續費 {fee}）", now_ms,
+            )
+            self._record_economy_currency_change(
+                connection, str(recipient_id), "fumao_coins", received,
+                f"收到 {sender_id} 的轉帳", now_ms,
+            )
+            return {
+                "amount": amount,
+                "fee": fee,
+                "received": received,
+                "total": total,
+                "sender_balance": int(sender["fumao_coins"]) - total,
+                "recipient_balance": int(
+                    self._select_economy_account(connection, str(recipient_id))["fumao_coins"]
+                ),
+            }
+
     def add_master(self, guild_id: str, actor_id: str, master_id: str) -> bool:
         """Record one accepted master relationship.
 

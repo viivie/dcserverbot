@@ -2,9 +2,15 @@
   "slots": ["生之花", "死之羽", "時之沙", "空之杯", "理之冠"],
   "sets": {
     "example_set": {
-      "name": "範例套裝",
-      "two_piece": {"description": "在這裡填寫 2 件套效果", "stats": {}},
-      "four_piece": {"description": "在這裡填寫 4 件套效果", "stats": {}}
+      "name": "星穹征服者",
+      "two_piece": {
+        "description": "攻擊力提升 10%",
+        "stats": {"atk_percent": 0.1}
+      },
+      "four_piece": {
+        "description": "暴擊傷害提升 20%",
+        "stats": {"crit_damage": 0.2}
+      }
     }
   },
   "main_stats": {

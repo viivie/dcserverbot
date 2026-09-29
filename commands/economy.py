@@ -829,6 +829,50 @@ def register_economy(
                 file=file,
             )
 
+    @economy.command(name="轉帳", description="轉帳芙帽幣，從轉帳金額內扣除 5% 手續費")
+    @app_commands.guild_only()
+    @app_commands.describe(target="轉帳對象", amount="轉帳金額，手續費由付款方負擔")
+    async def transfer(interaction: Any, target: discord.Member, amount: int) -> None:
+        if target.id == interaction.user.id:
+            await interaction.response.send_message("不能轉帳給自己。", ephemeral=True)
+            return
+        if target.bot:
+            await interaction.response.send_message("不能轉帳給機器人。", ephemeral=True)
+            return
+        try:
+            result = await asyncio.to_thread(
+                context.store.transfer_fumao_coins,
+                str(interaction.user.id),
+                str(target.id),
+                int(amount),
+            )
+        except ValueError as error:
+            await interaction.response.send_message(
+                view=v2_view_from_embed(
+                    discord_module.Embed(
+                        title="❌ 轉帳失敗",
+                        description=str(error),
+                        color=0xE74C3C,
+                    )
+                ),
+                ephemeral=True,
+            )
+            return
+
+        coin = _currency_emoji(interaction.guild, "FumaoCoin")
+        embed = discord_module.Embed(
+            title="✅ 轉帳成功",
+            description=(
+                f"{interaction.user.mention} 已轉帳給 {target.mention}\n\n"
+                f"扣除金額：**{_number(result['amount'])}** {coin} 芙帽幣\n"
+                f"手續費（5%）：**{_number(result['fee'])}** {coin} 芙帽幣\n"
+                f"對方收到：**{_number(result['received'])}** {coin} 芙帽幣\n"
+                f"目前餘額：**{_number(result['sender_balance'])}** {coin} 芙帽幣"
+            ),
+            color=0x2ECC71,
+        )
+        await interaction.response.send_message(view=v2_view_from_embed(embed))
+
     @economy.command(name="餘額", description="查看芙帽幣、水晶與神恩餘額")
     @app_commands.guild_only()
     async def balance(interaction: Any) -> None:

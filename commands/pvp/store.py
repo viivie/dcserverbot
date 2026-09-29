@@ -148,10 +148,15 @@ class PvpStore:
                     (int(now_ms) + 24 * 60 * 60 * 1000, int(now_ms), str(user_id)),
                 )
             elif coins > profile["baseline_coins"] * 2:
-                new_cap = max(profile["loss_cap"], int(coins * 0.10))
+                # Treat the current balance as the new PvP reference point as
+                # soon as the loss cap is expanded.  The accumulated loss is
+                # intentionally preserved, while the cap is recalculated from
+                # the new baseline.
+                new_baseline = coins
+                new_cap = max(1, int(coins * 0.10))
                 connection.execute(
-                    "UPDATE pvp_profiles SET loss_cap = ?, updated_at = ? WHERE user_id = ?",
-                    (new_cap, int(now_ms), str(user_id)),
+                    "UPDATE pvp_profiles SET baseline_coins = ?, loss_cap = ?, updated_at = ? WHERE user_id = ?",
+                    (new_baseline, new_cap, int(now_ms), str(user_id)),
                 )
         return self._select_profile(connection, user_id)
 
@@ -162,6 +167,58 @@ class PvpStore:
             account = self._account(connection, str(user_id))
             profile.update({"fumao_coins": int(account["fumao_coins"]), "level": int(account["level"])})
             return profile
+
+    def recent_attack_logs(self, user_id: str, limit: int = 5) -> dict[str, list[dict[str, Any]]]:
+        """Return recent thefts made by and against a user."""
+        safe_limit = max(1, min(int(limit), 20))
+        with self.base.lock, self._connect() as connection:
+            result: dict[str, list[dict[str, Any]]] = {"attacks": [], "defended": []}
+            for action, key in (("attack", "attacks"), ("defended", "defended")):
+                rows = connection.execute(
+                    """
+                    SELECT actor_id, target_id, amount, details, created_at
+                    FROM pvp_logs
+                    WHERE actor_id = ? AND action = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (str(user_id), action, safe_limit),
+                ).fetchall()
+                for actor_id, target_id, amount, details, created_at in rows:
+                    try:
+                        parsed_details = json.loads(details)
+                    except (TypeError, json.JSONDecodeError):
+                        parsed_details = {}
+                    result[key].append({
+                        "actor_id": str(actor_id),
+                        "target_id": str(target_id) if target_id is not None else "",
+                        "amount": int(amount),
+                        "created_at": int(created_at),
+                        "details": parsed_details if isinstance(parsed_details, dict) else {},
+                    })
+            return result
+
+    def enabled_profiles(self, user_ids: list[str] | set[str], now_ms: int | None = None) -> list[dict[str, Any]]:
+        """Return enabled PvP profiles belonging to the supplied guild members."""
+        member_ids = {str(user_id) for user_id in user_ids}
+        if not member_ids:
+            return []
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        with self.base.lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT user_id FROM pvp_profiles WHERE enabled = 1"
+            ).fetchall()
+            enabled_ids = [str(row[0]) for row in rows if str(row[0]) in member_ids]
+            profiles: list[dict[str, Any]] = []
+            for user_id in enabled_ids:
+                profile = self._refresh(connection, user_id, now)
+                if not profile["enabled"]:
+                    continue
+                account = self._account(connection, user_id)
+                profile.update({"fumao_coins": int(account["fumao_coins"]), "level": int(account["level"])})
+                profiles.append(profile)
+            profiles.sort(key=lambda item: (-int(item["fumao_coins"]), str(item["user_id"])))
+            return profiles
 
     def toggle(self, user_id: str, enabled: bool, now_ms: int, minimum: int, cooldown_ms: int) -> dict[str, Any]:
         with self.base.lock, self._connect() as connection:
@@ -376,6 +433,85 @@ class PvpStore:
             ).fetchone()
             return self._artifact(updated)
 
+    def upgrade_artifact_batch(
+        self,
+        user_id: str,
+        artifact_id: int,
+        max_level: int,
+        upgrades: list[tuple[int, str | None, float, float]],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Apply several artifact levels atomically.
+
+        Each tuple contains (coin_cost, rolled_sub_stat, rolled_value, main_value).
+        """
+        if not upgrades:
+            raise ValueError("至少要升級 1 次")
+        with self.base.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, user_id, color, set_id, slot, level, main_stat,
+                       main_value, sub_stats, original_value, upgrade_cost,
+                       equipped, created_at FROM pvp_artifacts
+                WHERE id = ? AND user_id = ?
+                """, (int(artifact_id), str(user_id)),
+            ).fetchone()
+            if row is None:
+                raise ValueError("找不到這件聖遺物")
+            artifact = self._artifact(row)
+            if artifact["level"] + len(upgrades) > int(max_level):
+                raise ValueError("批量升級會超過這件聖遺物的等級上限")
+            total_cost = sum(int(item[0]) for item in upgrades)
+            account = self._account(connection, str(user_id))
+            if int(account["fumao_coins"]) < total_cost:
+                raise ValueError(f"芙帽幣不足，需要 {total_cost:,} 芙帽幣。")
+
+            sub_stats = dict(artifact["sub_stats"])
+            events: list[dict[str, Any]] = []
+            level = int(artifact["level"])
+            main_value = float(artifact["main_value"])
+            for cost, roll_stat, roll_amount, next_main_value in upgrades:
+                level += 1
+                main_value = float(next_main_value)
+                if roll_stat:
+                    sub_stats[roll_stat] = round(float(sub_stats.get(roll_stat, 0)) + float(roll_amount), 4)
+                    upgrade_counts = sub_stats.setdefault("__upgrade_counts__", {})
+                    if isinstance(upgrade_counts, dict):
+                        upgrade_counts[roll_stat] = int(upgrade_counts.get(roll_stat, 0)) + 1
+                    events.append({"level": level, "stat": roll_stat, "amount": float(roll_amount)})
+
+            connection.execute(
+                """
+                UPDATE pvp_artifacts
+                SET level = ?, main_value = ?, sub_stats = ?, upgrade_cost = upgrade_cost + ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (
+                    level, main_value, json.dumps(sub_stats, ensure_ascii=False),
+                    total_cost, int(artifact_id), str(user_id),
+                ),
+            )
+            connection.execute(
+                "UPDATE economy_accounts SET fumao_coins = fumao_coins - ? WHERE user_id = ?",
+                (total_cost, str(user_id)),
+            )
+            self.base._record_economy_currency_change(
+                connection, str(user_id), "fumao_coins", -total_cost,
+                f"PvP 聖遺物批量升級 x{len(upgrades)}", int(now_ms),
+            )
+            updated = connection.execute(
+                """
+                SELECT id, user_id, color, set_id, slot, level, main_stat,
+                       main_value, sub_stats, original_value, upgrade_cost,
+                       equipped, created_at FROM pvp_artifacts WHERE id = ?
+                """, (int(artifact_id),),
+            ).fetchone()
+            result = self._artifact(updated)
+            result["upgrade_events"] = events
+            result["upgrade_count"] = len(upgrades)
+            result["total_cost"] = total_cost
+            return result
+
     def charge_domain_entry(
         self,
         user_id: str,
@@ -453,8 +589,22 @@ class PvpStore:
             lost = defender_profile["lost_coins"] + actual
             closed = requested > remaining or lost >= defender_profile["loss_cap"]
             connection.execute(
-                "UPDATE pvp_profiles SET enabled = ?, lost_coins = ?, updated_at = ? WHERE user_id = ?",
-                (0 if closed else 1, lost, int(now_ms), str(defender_id)),
+                """
+                UPDATE pvp_profiles
+                SET enabled = ?, lost_coins = ?,
+                    toggle_cooldown_until = CASE WHEN ? THEN 0 ELSE toggle_cooldown_until END,
+                    forced_cooldown_until = CASE WHEN ? THEN 0 ELSE forced_cooldown_until END,
+                    updated_at = ?
+                WHERE user_id = ?
+                """,
+                (
+                    0 if closed else 1,
+                    lost,
+                    1 if closed else 0,
+                    1 if closed else 0,
+                    int(now_ms),
+                    str(defender_id),
+                ),
             )
             payload = dict(details)
             payload.update({"requested_theft": requested, "actual_loss": actual,
