@@ -396,6 +396,7 @@ class WorshipStore:
                 "tribute_percent": tribute_percent,
                 "tribute_amount": tribute_amount,
                 "crystals_reward": crystals_reward,
+                "pvp_chance_multiplier": 1.4 if pvp_enabled else 1.0,
             }
 
     @staticmethod

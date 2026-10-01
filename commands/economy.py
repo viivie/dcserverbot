@@ -395,39 +395,44 @@ def _quick_checkin_sections(
     coin = _currency_emoji(guild, "FumaoCoin")
 
     if daily.get("claimed"):
-        daily_bonus = ""
+        daily_lines = [
+            f"獲得 **{_number(daily['base_reward'])}** {coin} 芙帽幣",
+            f"每日簽到倍率　　　{_multiplier(float(daily['multiplier']))}",
+        ]
         if float(daily.get("pvp_multiplier", 1.0)) > 1.0:
-            daily_bonus = f"\nPvP 簽到加成　　　{_multiplier(float(daily['pvp_multiplier']))}"
-        daily_value = (
-            f"獲得 **{_number(daily['reward'])}** {coin} 芙帽幣\n"
-            f"每日簽到倍率　　　{_multiplier(float(daily['multiplier']))}\n"
+            daily_lines.append(
+                f"PvP 簽到加成　　　{_multiplier(float(daily['pvp_multiplier']))}"
+            )
+        daily_lines.append(
             f"合計　　　　　　　**{_number(daily['reward'])}** {coin} 芙帽幣"
-            f"{daily_bonus}"
         )
-        daily_name = "每日簽到　成功"
+        daily_value = "\n".join(daily_lines)
+        daily_name = "每日簽到"
     else:
         daily_value = "今天的每日獎勵已領取。"
         daily_name = "每日簽到　已完成"
     if hourly.get("claimed"):
         accumulated = int(hourly["accumulated_hours"])
-        accumulated_reward = int(hourly["base_reward"]) * accumulated
         saved_hours = level_data(int(current_account["level"])).saved_hours
         storage_note = (
             f"（等級{current_account['level']}上限為{saved_hours}小時）"
             if accumulated >= saved_hours
             else ""
         )
-        hourly_bonus = ""
+        hourly_lines = [
+            f"獲得 **{_number(hourly['base_reward'])}** {coin} 芙帽幣",
+            f"累積 {accumulated} 小時獎勵{storage_note}　　×{accumulated}",
+            f"每小時簽到倍率　　{_multiplier(float(hourly['multiplier']))}",
+        ]
         if float(hourly.get("pvp_multiplier", 1.0)) > 1.0:
-            hourly_bonus = f"\nPvP 簽到加成　　　{_multiplier(float(hourly['pvp_multiplier']))}"
-        hourly_value = (
-            f"獲得 **{_number(hourly['reward'])}** {coin} 芙帽幣\n"
-            f"累積 {accumulated} 小時獎勵{storage_note}　　{_number(accumulated_reward)} 芙帽幣\n"
-            f"每小時簽到倍率　　{_multiplier(float(hourly['multiplier']))}\n"
+            hourly_lines.append(
+                f"PvP 簽到加成　　　{_multiplier(float(hourly['pvp_multiplier']))}"
+            )
+        hourly_lines.append(
             f"合計　　　　　　　**{_number(hourly['reward'])}** {coin} 芙帽幣"
-            f"{hourly_bonus}"
         )
-        hourly_name = "每小時簽到　成功"
+        hourly_value = "\n".join(hourly_lines)
+        hourly_name = "每小時簽到"
     else:
         next_at = hourly.get("next_hourly_at")
         next_text = "稍後"
@@ -503,21 +508,24 @@ class CheckinLayoutView(discord.ui.LayoutView):
         self.add_item(container)
 
     async def _show_upgrade(self, interaction: discord.Interaction) -> None:
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-
         account = await asyncio.to_thread(
             self.context.store.economy_account,
             str(interaction.user.id),
         )
         if not can_upgrade(account):
+            private_view = UpgradeView(
+                self.context,
+                interaction.user.id,
+                interaction.guild,
+                None,
+            )
             try:
-                await interaction.edit_original_response(
+                await interaction.response.send_message(
                     view=v2_view_from_embed(
-                        _upgrade_embed(discord, account, interaction.guild, confirm=False)
-                    )
+                        _upgrade_embed(discord, account, interaction.guild, confirm=False),
+                        legacy_view=private_view,
+                    ),
+                    ephemeral=True,
                 )
             except discord.NotFound:
                 pass
@@ -531,11 +539,12 @@ class CheckinLayoutView(discord.ui.LayoutView):
         )
         private_view._set_confirmation_buttons()
         try:
-            await interaction.edit_original_response(
+            await interaction.response.send_message(
                 view=v2_view_from_embed(
                     _upgrade_embed(discord, account, interaction.guild, confirm=True),
                     legacy_view=private_view,
-                )
+                ),
+                ephemeral=True,
             )
         except discord.NotFound:
             pass
@@ -662,13 +671,17 @@ class UpgradeView(discord.ui.View):
         account = await asyncio.to_thread(self.context.store.economy_account, str(self.user_id))
         target = next_level(account)
         if target is None:
+            self.pvp_spend_warning_shown = False
+            self._set_upgrade_button()
             try:
                 await interaction.edit_original_response(
-                    view=v2_view_from_embed(discord.Embed(title="已達最高等級", color=EMBED_COLOR))
+                    view=v2_view_from_embed(
+                        discord.Embed(title="已達最高等級", color=EMBED_COLOR),
+                        legacy_view=self,
+                    )
                 )
             except discord.NotFound:
                 pass
-            self.stop()
             return
 
         if not self.pvp_spend_warning_shown:
@@ -718,11 +731,14 @@ class UpgradeView(discord.ui.View):
                 description="目前餘額不足，或這個升級已經被其他操作完成。",
                 color=0xE74C3C,
             )
+        self.pvp_spend_warning_shown = False
+        self._set_upgrade_button()
         try:
-            await interaction.edit_original_response(view=v2_view_from_embed(embed))
+            await interaction.edit_original_response(
+                view=v2_view_from_embed(embed, legacy_view=self)
+            )
         except discord.NotFound:
             pass
-        self.stop()
 
     async def _cancel_upgrade(self, interaction: discord.Interaction) -> None:
         if await self._deny_other_user(interaction):

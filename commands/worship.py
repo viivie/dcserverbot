@@ -147,9 +147,16 @@ def register_worship(tree: Any, discord: Any, app_commands: Any, context: Comman
         embed.add_field(name="當前連續天數", value=day_label(receipt["streak"]), inline=True)
         embed.add_field(
             name="本次獻祭",
-            value=(
-                f"比例：**{tribute_percent}%**\n"
-                f"扣除：**{receipt['tribute_amount']:,}** 芙帽幣"
+            value="\n".join(
+                [
+                    f"比例：**{tribute_percent}%**",
+                    f"扣除：**{receipt['tribute_amount']:,}** 芙帽幣",
+                    *(
+                        ["PvP 開啟加成：**×1.4**"]
+                        if float(receipt.get("pvp_chance_multiplier", 1.0)) > 1.0
+                        else []
+                    ),
+                ]
             ),
             inline=True,
         )
