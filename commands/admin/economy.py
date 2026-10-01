@@ -24,8 +24,72 @@ CURRENCY_EMOJIS_BY_STORAGE_KEY = {
 }
 
 
-def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
-    """Build the private V2 card used by ``&money-log``."""
+class MoneyLogView(discord.ui.View):
+    def __init__(
+        self,
+        user_id: str,
+        logs: list[dict[str, Any]],
+        requester_id: str,
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.user_id = str(user_id)
+        self.logs = logs
+        self.requester_id = str(requester_id)
+        self.page = max(0, int(page))
+        page_count = max(1, (len(logs) + 9) // 10)
+        self.page = min(self.page, page_count - 1)
+
+        if self.page > 0:
+            previous = discord.ui.Button(
+                label="上一頁",
+                style=discord.ButtonStyle.primary,
+                custom_id="money-log-prev",
+            )
+            previous.callback = self._page_callback(self.page - 1)
+            self.add_item(previous)
+        if self.page + 1 < page_count:
+            following = discord.ui.Button(
+                label="下一頁",
+                style=discord.ButtonStyle.primary,
+                custom_id="money-log-next",
+            )
+            following.callback = self._page_callback(self.page + 1)
+            self.add_item(following)
+
+    def _page_callback(self, page: int):
+        async def callback(interaction: discord.Interaction) -> None:
+            if str(interaction.user.id) != self.requester_id:
+                await interaction.response.send_message(
+                    "這不是你的貨幣紀錄介面。",
+                    ephemeral=True,
+                )
+                return
+            try:
+                await interaction.response.edit_message(
+                    view=money_log_view(
+                        self.user_id,
+                        self.logs,
+                        self.requester_id,
+                        page,
+                    )
+                )
+            except (discord.NotFound, discord.HTTPException):
+                return
+
+        return callback
+
+
+def money_log_view(
+    user_id: str,
+    logs: list[dict[str, Any]],
+    requester_id: str = "",
+    page: int = 0,
+) -> Any:
+    """Build the V2 card used by ``&log`` with ten-entry pagination."""
+    page_count = max(1, (len(logs) + 9) // 10)
+    page = max(0, min(int(page), page_count - 1))
+    display_logs = logs[page * 10:(page + 1) * 10]
     embed = discord.Embed(
         title="💰 貨幣變動紀錄",
         description=(
@@ -38,7 +102,6 @@ def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
     if not logs:
         embed.add_field(name="紀錄", value="目前沒有獲取紀錄。", inline=False)
     else:
-        display_logs = logs[:10]
         lines: list[str] = []
         for item in display_logs:
             timestamp = datetime.fromtimestamp(
@@ -55,13 +118,16 @@ def money_log_view(user_id: str, logs: list[dict[str, Any]]) -> Any:
                 f"{sign}{amount:,} {emoji} {label}"
             )
 
-        if len(logs) > len(display_logs):
-            lines.append(f"…（還有 {len(logs) - len(display_logs)} 筆紀錄，請縮小查詢範圍或稍後再查）")
         embed.add_field(
             name=f"最近 {len(display_logs)} 筆紀錄",
             value="\n".join(lines)[:3600],
             inline=False,
         )
 
-    embed.set_footer(text="時間為 UTC+8｜正數為增加，負數為扣除")
-    return v2_view_from_embed(embed)
+    embed.set_footer(text=f"第 {page + 1} / {page_count} 頁｜時間為 UTC+8｜正數為增加，負數為扣除")
+    return v2_view_from_embed(
+        embed,
+        legacy_view=MoneyLogView(user_id, logs, requester_id, page)
+        if requester_id
+        else None,
+    )

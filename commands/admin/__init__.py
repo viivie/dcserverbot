@@ -607,7 +607,7 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
 
             logs = await _run_in_thread(store.economy_currency_logs, target_id)
             await message.channel.send(
-                view=money_log_view(target_id, logs),
+                view=money_log_view(target_id, logs, str(message.author.id)),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return True
