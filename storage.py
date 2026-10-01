@@ -319,6 +319,7 @@ class WorshipStore:
                     "crystals_reward": 0,
                 }
 
+            user_id = str(actor_id).removeprefix("discord:")
             balance = int(account["fumao_coins"])
             tribute_amount = max(100, balance * tribute_percent // 100)
             if balance < tribute_amount:
@@ -335,8 +336,22 @@ class WorshipStore:
                     "crystals_reward": 0,
                 }
 
-            crystals_reward = random.randint(1, 5) if random.random() < tribute_percent * 0.07 else 0
-            user_id = str(actor_id).removeprefix("discord:")
+            # PvP members receive a worship manifestation chance bonus. Check
+            # the state before the tribute is deducted, so the bonus applies
+            # to the worship that was performed while PvP was enabled even if
+            # the deduction subsequently forces PvP to close.
+            pvp_enabled = False
+            try:
+                pvp_row = connection.execute(
+                    "SELECT enabled FROM pvp_profiles WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                pvp_enabled = bool(pvp_row and pvp_row[0])
+            except sqlite3.OperationalError:
+                # PvP tables are created during command registration.
+                pass
+            crystal_chance = tribute_percent * 0.07 * (1.4 if pvp_enabled else 1.0)
+            crystals_reward = random.randint(1, 5) if random.random() < min(1.0, crystal_chance) else 0
             connection.execute(
                 """
                 INSERT INTO actors(actor_id, streak, last_date) VALUES (?, ?, ?)
