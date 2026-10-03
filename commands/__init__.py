@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 def register_all(tree, discord, app_commands, context: CommandContext) -> None:
     from commands.economy import register_economy
+    from commands.entertainment import register_entertainment
     from commands.master import register_master
     from commands.pvp import register_pvp
     from commands.ritual import register_ritual
@@ -20,5 +21,6 @@ def register_all(tree, discord, app_commands, context: CommandContext) -> None:
     register_worship_someone(tree, discord, app_commands, context)
     register_master(tree, discord, app_commands, context)
     register_economy(tree, discord, app_commands, context)
+    register_entertainment(tree, discord, app_commands, context)
     register_pvp(tree, discord, app_commands, context)
     register_ritual(tree, discord, app_commands, context)
