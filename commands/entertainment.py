@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 from typing import Any, TYPE_CHECKING
 
+import discord
+
 from components_v2 import v2_view_from_embed
 
 if TYPE_CHECKING:
@@ -88,6 +90,168 @@ def _match_embed(discord_module: Any, actor: Any, result: dict[str, Any]) -> Any
     return embed
 
 
+def _registration_embed(discord_module: Any, view: "RegistrationView") -> Any:
+    lines = [
+        f"目前報名：**{len(view.registrants)}** 人",
+        f"剩餘時間：**{view.timeout_seconds} 秒**",
+        "點擊下方按鈕填寫你不想打的位置。",
+    ]
+    if view.registrants:
+        roster = [
+            f"{user.mention}｜不想打：{avoid or '無'}"
+            for user, avoid in view.registrants.values()
+        ]
+        lines.extend(["", "\n".join(roster)])
+    embed = discord_module.Embed(
+        title="🎲 對局報名",
+        description="\n".join(lines),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="時限結束後將隨機分配監管者與求生者位置")
+    return embed
+
+
+def _draw_registered_match(
+    registrants: dict[int, tuple[Any, str]],
+) -> tuple[Any, list[Any]] | None:
+    participants = list(registrants.values())
+    hunter_candidates = [item for item in participants if item[1] != "監管"]
+    if not hunter_candidates:
+        return None
+
+    valid_hunters = []
+    for hunter in hunter_candidates:
+        survivors = [
+            item for item in participants
+            if item is not hunter and item[1] != "求生"
+        ]
+        if len(survivors) >= 4:
+            valid_hunters.append((hunter, survivors))
+    if not valid_hunters:
+        return None
+
+    hunter, survivors = random.choice(valid_hunters)
+    return hunter[0], [item[0] for item in random.sample(survivors, 4)]
+
+
+def _registration_result_embed(
+    discord_module: Any,
+    view: "RegistrationView",
+) -> Any:
+    result = _draw_registered_match(view.registrants)
+    if result is None:
+        description = (
+            f"共 {len(view.registrants)} 人報名，但沒有符合條件的完整對局。\n"
+            "至少需要 1 名可擔任監管者的玩家與 4 名可擔任求生者的玩家。"
+        )
+    else:
+        hunter, survivors = result
+        description = (
+            f"監管者：{hunter.mention}\n\n"
+            "求生者\n"
+            + "\n".join(
+                f"{index} 號位：{user.mention}"
+                for index, user in enumerate(survivors, 1)
+            )
+        )
+    embed = discord_module.Embed(
+        title="🎲 對局分配完成",
+        description=description,
+        color=0x2ECC71 if result is not None else 0xE67E22,
+    )
+    embed.set_footer(text=f"共 {len(view.registrants)} 人報名｜報名已截止")
+    return embed
+
+
+class RegistrationView(discord.ui.View):
+    def __init__(self, timeout_seconds: int) -> None:
+        super().__init__(timeout=max(10, int(timeout_seconds)))
+        self.timeout_seconds = max(10, int(timeout_seconds))
+        self.registrants: dict[int, tuple[Any, str]] = {}
+        self.message: Any = None
+        self.closed = False
+
+        button = discord.ui.Button(
+            label="點我報名",
+            style=discord.ButtonStyle.primary,
+            custom_id="entertainment-register",
+        )
+        button.callback = self._register_callback
+        self.add_item(button)
+
+    async def _register_callback(self, interaction: discord.Interaction) -> None:
+        if self.closed:
+            await interaction.response.send_message("報名已截止。", ephemeral=True)
+            return
+        await interaction.response.send_modal(RegistrationModal(self))
+
+    async def refresh_message(self) -> None:
+        if self.message is None or self.closed:
+            return
+        try:
+            await self.message.edit(
+                view=v2_view_from_embed(
+                    _registration_embed(discord, self),
+                    legacy_view=self,
+                )
+            )
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+    async def on_timeout(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.clear_items()
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(
+                view=v2_view_from_embed(_registration_result_embed(discord, self))
+            )
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+
+class RegistrationModal(discord.ui.Modal, title="對局報名"):
+    avoid_input = discord.ui.TextInput(
+        label="不想打的位置",
+        placeholder="1＝監管、2＝求生，或留空",
+        required=False,
+        max_length=2,
+    )
+
+    def __init__(self, registration_view: RegistrationView) -> None:
+        super().__init__()
+        self.registration_view = registration_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        view = self.registration_view
+        if view.closed:
+            await interaction.response.send_message("報名已截止。", ephemeral=True)
+            return
+        if interaction.user.id in view.registrants:
+            await interaction.response.send_message("你已提交過了。", ephemeral=True)
+            return
+
+        avoid = str(self.avoid_input.value or "").strip()
+        avoid_mapping = {"1": "監管", "2": "求生"}
+        if avoid not in {"", *avoid_mapping}:
+            await interaction.response.send_message(
+                "只能填 1（監管）、2（求生）或留空。",
+                ephemeral=True,
+            )
+            return
+
+        avoid = avoid_mapping.get(avoid, "")
+        view.registrants[interaction.user.id] = (interaction.user, avoid)
+        await interaction.response.send_message(
+            f"報名成功！不想打：{avoid or '無'}",
+            ephemeral=True,
+        )
+        await view.refresh_message()
+
+
 def register_entertainment(
     tree: Any,
     discord_module: Any,
@@ -105,5 +269,25 @@ def register_entertainment(
                 _match_embed(discord_module, interaction.user, result)
             )
         )
+
+    @entertainment.command(name="報名", description="建立一場限時對局報名")
+    @app_commands.guild_only()
+    @app_commands.describe(timeout_seconds="報名持續秒數，預設 60 秒")
+    async def register_match(interaction: Any, timeout_seconds: int = 60) -> None:
+        if not 10 <= timeout_seconds <= 3600:
+            await interaction.response.send_message(
+                "報名時限必須介於 10 到 3600 秒。",
+                ephemeral=True,
+            )
+            return
+
+        registration_view = RegistrationView(timeout_seconds)
+        await interaction.response.send_message(
+            view=v2_view_from_embed(
+                _registration_embed(discord_module, registration_view),
+                legacy_view=registration_view,
+            )
+        )
+        registration_view.message = await interaction.original_response()
 
     tree.add_command(entertainment)
