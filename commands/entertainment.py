@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import Any, TYPE_CHECKING
 
 import discord
@@ -24,7 +25,7 @@ SURVIVORS = [
     "小說家", "小女孩", "哭泣小丑", "教授", "古董商", "作曲家",
     "記者", "飛行家", "拉拉隊員", "木偶師", "火災調查員", "法羅女士",
     "騎士", "氣象學家", "弓箭手", "逃脫大師", "幻燈師", "鬥牛士",
-    "默劇藝人",
+    "默劇藝人", "神童",
 ]
 HUNTERS = [
     "廠長", "小丑", "鹿頭", "傑克", "蜘蛛", "紅蝶", "黃衣之主",
@@ -170,6 +171,7 @@ class RegistrationView(discord.ui.View):
         self.registrants: dict[int, tuple[Any, str]] = {}
         self.message: Any = None
         self.closed = False
+        self.created_at = time.monotonic()
 
         button = discord.ui.Button(
             label="點我報名",
@@ -199,18 +201,25 @@ class RegistrationView(discord.ui.View):
             return
 
     async def on_timeout(self) -> None:
+        await self.finish()
+
+    async def finish(self) -> bool:
         if self.closed:
-            return
+            return False
         self.closed = True
         self.clear_items()
+        if self.message is not None:
+            ACTIVE_REGISTRATIONS.pop(int(self.message.id), None)
         if self.message is None:
-            return
+            return True
         try:
             await self.message.edit(
                 view=v2_view_from_embed(_registration_result_embed(discord, self))
             )
         except (discord.NotFound, discord.HTTPException):
-            return
+            pass
+        self.stop()
+        return True
 
 
 class RegistrationModal(discord.ui.Modal, title="對局報名"):
@@ -252,6 +261,36 @@ class RegistrationModal(discord.ui.Modal, title="對局報名"):
         await view.refresh_message()
 
 
+ACTIVE_REGISTRATIONS: dict[int, RegistrationView] = {}
+
+
+def register_active_registration(view: RegistrationView) -> None:
+    if view.message is not None:
+        ACTIVE_REGISTRATIONS[int(view.message.id)] = view
+
+
+async def stop_active_registration(
+    channel_id: str,
+    message_id: str | None = None,
+) -> bool:
+    candidates = [
+        view
+        for view in ACTIVE_REGISTRATIONS.values()
+        if view.message is not None
+        and str(view.message.channel.id) == str(channel_id)
+        and not view.closed
+    ]
+    if message_id:
+        candidates = [
+            view for view in candidates
+            if str(view.message.id) == str(message_id)
+        ]
+    if not candidates:
+        return False
+    target = max(candidates, key=lambda view: view.created_at)
+    return await target.finish()
+
+
 def register_entertainment(
     tree: Any,
     discord_module: Any,
@@ -289,5 +328,6 @@ def register_entertainment(
             )
         )
         registration_view.message = await interaction.original_response()
+        register_active_registration(registration_view)
 
     tree.add_command(entertainment)

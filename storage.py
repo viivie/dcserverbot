@@ -138,6 +138,20 @@ class WorshipStore:
                     FOREIGN KEY (bet_message_id) REFERENCES bets(message_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS interaction_cards (
+                    message_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    actor_id TEXT,
+                    target_id TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    resolved_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_interaction_cards_pending
+                    ON interaction_cards(kind, resolved_at, expires_at);
+
                 CREATE TABLE IF NOT EXISTS prefix_command_permissions (
                     user_id TEXT NOT NULL,
                     command TEXT NOT NULL,
@@ -896,6 +910,86 @@ class WorshipStore:
                     for index, (option_name, odds) in enumerate(options)
                 ],
             )
+
+    def create_interaction_card(
+        self,
+        message_id: str,
+        kind: str,
+        guild_id: str,
+        target_id: str,
+        *,
+        actor_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        created_at: int | None = None,
+        expires_at: int | None = None,
+    ) -> None:
+        """Persist the data needed by a long-lived interactive card.
+
+        The Discord message ID is the stable key.  This lets the shared
+        persistent handler resolve a card without recreating a View for it.
+        """
+        now_ms = int(time.time() * 1000) if created_at is None else int(created_at)
+        with self.lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO interaction_cards(
+                    message_id, kind, guild_id, actor_id, target_id,
+                    payload, created_at, expires_at, resolved_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    str(message_id),
+                    str(kind),
+                    str(guild_id),
+                    str(actor_id) if actor_id is not None else None,
+                    str(target_id),
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    now_ms,
+                    int(expires_at) if expires_at is not None else None,
+                ),
+            )
+
+    def interaction_card(self, message_id: str) -> dict[str, Any] | None:
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT message_id, kind, guild_id, actor_id, target_id,
+                       payload, created_at, expires_at, resolved_at
+                FROM interaction_cards
+                WHERE message_id = ?
+                """,
+                (str(message_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[5])
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        return {
+            "message_id": str(row[0]),
+            "kind": str(row[1]),
+            "guild_id": str(row[2]),
+            "actor_id": str(row[3]) if row[3] is not None else None,
+            "target_id": str(row[4]),
+            "payload": payload if isinstance(payload, dict) else {},
+            "created_at": int(row[6]),
+            "expires_at": int(row[7]) if row[7] is not None else None,
+            "resolved_at": int(row[8]) if row[8] is not None else None,
+        }
+
+    def resolve_interaction_card(self, message_id: str, resolved_at: int | None = None) -> bool:
+        resolved_at = int(time.time() * 1000) if resolved_at is None else int(resolved_at)
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE interaction_cards
+                SET resolved_at = ?
+                WHERE message_id = ? AND resolved_at IS NULL
+                """,
+                (resolved_at, str(message_id)),
+            )
+            return cursor.rowcount == 1
 
     def bet_details(self, message_id: str) -> dict[str, Any] | None:
         with self.lock, self._connect() as connection:

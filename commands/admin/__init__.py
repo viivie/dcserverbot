@@ -12,6 +12,7 @@ import discord
 from components_v2 import v2_view_from_embed
 from commands.master import get_active_view, register_active_view
 from commands.economy import CURRENCY_EMOJIS
+from commands.entertainment import stop_active_registration
 from .cleanup import DeleteConfirmView
 from .economy import money_log_view
 from .bets import (
@@ -535,6 +536,17 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
 
         if command == "stop-bet":
             message_id = arguments.strip()
+            if message.guild is not None:
+                stopped_registration = await stop_active_registration(
+                    str(message.channel.id),
+                    message_id or None,
+                )
+                if stopped_registration:
+                    await message.channel.send(
+                        "已提早結束目前頻道的娛樂報名。",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    return True
             if not message_id:
                 message_id = await _run_in_thread(
                     store.latest_bet_message_id,
@@ -675,6 +687,15 @@ async def handle_admin_message(message: discord.Message, store: Any) -> bool:
             )
             view.message = confirmation
             register_active_view(confirmation.id, view)
+            await asyncio.to_thread(
+                store.create_interaction_card,
+                str(confirmation.id),
+                "role-grant",
+                str(message.guild.id),
+                str(member.id),
+                actor_id=str(message.author.id),
+                payload={"role_ids": [str(role.id) for role in roles]},
+            )
             return True
 
         if command == "button":

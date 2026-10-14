@@ -537,10 +537,14 @@ class BetOpenView(discord.ui.View):
         self.message: discord.Message | None = None
         self.closed = False
         self.expiry_task: asyncio.Task[None] | None = None
-        for option_name, odds in (options if started else []):
+        for index, (option_name, odds) in enumerate(options if started else []):
             button = discord.ui.Button(
                 label=option_name,
                 style=discord.ButtonStyle.primary,
+                # The option is resolved from interaction.message.id and the
+                # option index.  It must not depend on this View instance
+                # surviving a restart.
+                custom_id=f"bet:option:{index}",
             )
             button.callback = self._option_callback(option_name)
             self.add_item(button)
@@ -610,6 +614,95 @@ class BetOpenView(discord.ui.View):
             )
 
         return callback
+
+
+async def _open_bet_modal(
+    interaction: discord.Interaction,
+    store: Any,
+    message_id: str,
+    option_name: str,
+) -> None:
+    """Open the private amount modal after resolving a bet from its message.
+
+    This helper is shared by the normal in-process View and the persistent
+    handler.  The message ID is the card's identity; no per-card View state is
+    required for the persistent path.
+    """
+    bet = await asyncio.to_thread(store.bet_details, str(message_id))
+    if bet is None:
+        await interaction.response.send_message("找不到這個賭盤，這張卡片可能已經失效。", ephemeral=True)
+        return
+    if bet["resolved_outcome"] is not None or bet["closed_at"] is not None:
+        await interaction.response.send_message("這個賭盤已經停止下注。", ephemeral=True)
+        return
+    if bet["started_at"] is None:
+        await interaction.response.send_message("這個賭盤尚未開放下注。", ephemeral=True)
+        return
+    if int(time.time() * 1000) >= int(bet["expires_at"]):
+        await interaction.response.send_message("這個賭盤已經截止下注。", ephemeral=True)
+        return
+    if option_name not in {name for name, _ in bet["options"]}:
+        await interaction.response.send_message("這個下注選項已不存在。", ephemeral=True)
+        return
+
+    account = await asyncio.to_thread(
+        store.economy_account,
+        str(interaction.user.id),
+    )
+    await interaction.response.send_modal(
+        BetAmountModal(store, str(message_id), option_name, account)
+    )
+
+
+class PersistentBetOptionView(discord.ui.View):
+    """One shared persistent dispatcher for every open bet card.
+
+    The buttons intentionally contain only an option index.  The clicked
+    message ID identifies the bet, so the bot does not need one View instance
+    per historical message.
+    """
+
+    def __init__(self, store: Any) -> None:
+        super().__init__(timeout=None)
+        self.store = store
+        for index in range(MAX_OPTIONS):
+            button = discord.ui.Button(
+                label=f"選項 {index + 1}",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"bet:option:{index}",
+            )
+            button.callback = self._option_callback(index)
+            self.add_item(button)
+
+    def _option_callback(self, option_index: int):
+        async def callback(interaction: discord.Interaction) -> None:
+            if interaction.message is None:
+                await interaction.response.send_message("找不到這個賭盤訊息。", ephemeral=True)
+                return
+            bet = await asyncio.to_thread(
+                self.store.bet_details,
+                str(interaction.message.id),
+            )
+            if bet is None:
+                await interaction.response.send_message("找不到這個賭盤，這張卡片可能已經失效。", ephemeral=True)
+                return
+            options = bet["options"]
+            if option_index >= len(options):
+                await interaction.response.send_message("這個下注選項已不存在。", ephemeral=True)
+                return
+            await _open_bet_modal(
+                interaction,
+                self.store,
+                str(interaction.message.id),
+                options[option_index][0],
+            )
+
+        return callback
+
+
+def register_persistent_bet_handlers(client: Any, store: Any) -> None:
+    """Register the shared bet View exactly once during setup_hook."""
+    client.add_view(PersistentBetOptionView(store))
 
 
 async def stop_bet_message(

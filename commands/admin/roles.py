@@ -50,7 +50,11 @@ class GiveRoleConfirmView(discord.ui.View):
         await interaction.response.send_message("這不是給你的身分組喔😡", ephemeral=True)
         return True
 
-    @discord.ui.button(label="接受給予", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="接受給予",
+        style=discord.ButtonStyle.success,
+        custom_id="role-grant:accept",
+    )
     async def accept_callback(
         self,
         interaction: discord.Interaction,
@@ -75,7 +79,11 @@ class GiveRoleConfirmView(discord.ui.View):
             pass
         self.stop()
 
-    @discord.ui.button(label="拒絕", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="拒絕",
+        style=discord.ButtonStyle.danger,
+        custom_id="role-grant:reject",
+    )
     async def reject_callback(
         self,
         interaction: discord.Interaction,

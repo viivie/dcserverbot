@@ -7,6 +7,7 @@ import logging
 
 from commands import register_all
 from commands.context import CommandContext
+from commands.persistent import register_persistent_handlers
 from config import Config
 from discord_api import DiscordApi
 from google_drive import GoogleDriveBackup
@@ -39,6 +40,13 @@ def run_gateway(config: Config) -> None:
             self.backup_task: asyncio.Task | None = None
 
         async def setup_hook(self) -> None:
+            # Open bet cards are long-lived.  Register one shared persistent
+            # dispatcher keyed by interaction.message.id, plus a narrow
+            # DynamicItem fallback for cards created before stable custom IDs
+            # were introduced.  No historical messages are scanned and no
+            # per-card View instances are created here.
+            register_persistent_handlers(self, store)
+
             # Remove the old global command. The bot only publishes guild commands,
             # so Discord will show one /worship per server instead of two entries.
             try:

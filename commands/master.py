@@ -76,6 +76,11 @@ class WorshipView(discord.ui.View):
             return
 
         self.resolved = True
+        if self.message is not None:
+            await asyncio.to_thread(
+                self.store.resolve_interaction_card,
+                str(self.message.id),
+            )
         await self._reply_to_request(
             f"{self.target.mention}錯過了一個認主請求QwQ"
         )
@@ -83,6 +88,11 @@ class WorshipView(discord.ui.View):
     async def _resolve(self, button_number: int) -> str:
         if self.expired:
             self.resolved = True
+            if self.message is not None:
+                await asyncio.to_thread(
+                    self.store.resolve_interaction_card,
+                    str(self.message.id),
+                )
             self.stop()
             return f"{self.target.mention}錯過了一個認主請求QwQ"
 
@@ -94,6 +104,11 @@ class WorshipView(discord.ui.View):
             raise ValueError("目前認主卡片只有第 1、2 顆按鈕")
 
         self.resolved = True
+        if self.message is not None:
+            await asyncio.to_thread(
+                self.store.resolve_interaction_card,
+                str(self.message.id),
+            )
         self.stop()
         return content
 
@@ -112,6 +127,7 @@ class WorshipView(discord.ui.View):
     @discord.ui.button(
         label="接受",
         style=discord.ButtonStyle.success,
+        custom_id="master:accept",
     )
     async def accept_button_callback(
         self,
@@ -132,6 +148,7 @@ class WorshipView(discord.ui.View):
     @discord.ui.button(
         label="拒絕",
         style=discord.ButtonStyle.danger,
+        custom_id="master:reject",
     )
     async def reject_button_callback(
         self,
@@ -189,6 +206,11 @@ class ReleaseView(discord.ui.View):
     async def _resolve(self, button_number: int) -> str:
         if time.monotonic() >= self.expires_at:
             self.resolved = True
+            if self.message is not None:
+                await asyncio.to_thread(
+                    self.store.resolve_interaction_card,
+                    str(self.message.id),
+                )
             self.stop()
             return "這個解除契約申請已經過期了。"
 
@@ -217,15 +239,29 @@ class ReleaseView(discord.ui.View):
             raise ValueError("目前解除契約卡片只有第 1、2 顆按鈕")
 
         self.resolved = True
+        if self.message is not None:
+            await asyncio.to_thread(
+                self.store.resolve_interaction_card,
+                str(self.message.id),
+            )
         self.stop()
         return content
 
     async def on_timeout(self) -> None:
         if not self.resolved:
             self.resolved = True
+            if self.message is not None:
+                await asyncio.to_thread(
+                    self.store.resolve_interaction_card,
+                    str(self.message.id),
+                )
             await self._reply_to_request("這個解除契約申請已經過期了。")
 
-    @discord.ui.button(label="同意解除", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="同意解除",
+        style=discord.ButtonStyle.success,
+        custom_id="release:accept",
+    )
     async def accept_button_callback(
         self,
         interaction: discord.Interaction,
@@ -241,7 +277,11 @@ class ReleaseView(discord.ui.View):
         await interaction.response.defer()
         await self._reply_to_request(content)
 
-    @discord.ui.button(label="拒絕解除", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="拒絕解除",
+        style=discord.ButtonStyle.danger,
+        custom_id="release:reject",
+    )
     async def reject_button_callback(
         self,
         interaction: discord.Interaction,
@@ -331,6 +371,16 @@ def register_master(
         message = await interaction.original_response()
         view.message = message
         register_active_view(message.id, view)
+        await asyncio.to_thread(
+            context.store.create_interaction_card,
+            str(message.id),
+            "master",
+            str(interaction.guild_id),
+            str(target.id),
+            actor_id=str(actor.id),
+            created_at=int(time.time() * 1000),
+            expires_at=int(time.time() * 1000) + timeout * 1000,
+        )
 
 
     @tree.command(name="release_master", description="申請解除與特定成員的主奴契約")
@@ -398,6 +448,16 @@ def register_master(
         message = await interaction.original_response()
         view.message = message
         register_active_view(message.id, view)
+        await asyncio.to_thread(
+            context.store.create_interaction_card,
+            str(message.id),
+            "release",
+            guild_id,
+            str(target.id),
+            actor_id=str(actor.id),
+            created_at=int(time.time() * 1000),
+            expires_at=int(time.time() * 1000) + timeout * 1000,
+        )
 
 
 
